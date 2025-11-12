@@ -1,0 +1,1 @@
+Please extract the project location from the payroll and Davis-Bacon wages files, using the provided search_location tool. Return a short string (1-2 sentences) describing the project location, including the matching county from the Davis-Bacon wages file. If you cannot determine the project location, return "Unknown project location".

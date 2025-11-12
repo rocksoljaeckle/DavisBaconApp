@@ -1,0 +1,11 @@
+config.toml
+
+#directories
+.streamlit/
+.venv/
+uploaded_files/
+documents/
+ssl/
+tests/
+.idea/
+__pycache__/
