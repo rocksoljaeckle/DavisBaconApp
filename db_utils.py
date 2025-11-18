@@ -7,10 +7,7 @@ import io
 from anthropic import AsyncAnthropic
 from pypdf import PdfReader, PdfWriter
 import pypdfium2 as pdfium
-import sys
 from openai import AsyncOpenAI
-from pathlib import Path
-import hashlib
 import json
 import asyncio
 from pydantic import BaseModel
@@ -19,8 +16,11 @@ from rapidfuzz.utils import default_process as rapidfuzz_default_process
 import tomli
 import base64
 import googlemaps
+import fitz
 
 from GlobalUtils.ocr import whisper_pdf_text_extraction
+from GlobalUtils.openai_uploading import get_or_upload_async
+from GlobalUtils.citation import find_best_openai_lines, render_line_highlights
 
 
 class EmployeeWageCheck(BaseModel):
@@ -53,42 +53,6 @@ def report_wage_check(wage_check: EmployeeWageCheck):
 def report_parsing_error(error_message: str):
     """Report an error in parsing the compliance table."""
     return error_message
-
-def sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-def load_cache(cache_path) -> dict:
-    cache_path = cache_path
-    if cache_path.exists():
-        return json.loads(cache_path.read_text())
-    return {}
-
-def save_cache(cache_path: Path, cache: dict):
-    cache_path.write_text(json.dumps(cache))
-
-async def get_or_upload_async(file_path: str, client: AsyncOpenAI, cache_path: str, purpose = "user-data") -> str:
-    cache_path = Path(cache_path)
-    file_path = Path(file_path)
-    cache = load_cache(cache_path)
-    digest = sha256(file_path)
-
-    # 1. Cache hit ➜ just return the ID
-    if digest in cache:
-        return cache[digest]
-
-    # 2. Cache miss ➜ upload once
-    with open(file_path, "rb") as f:
-        creation_resp = await client.files.create(file=f, purpose=purpose)
-        file_id = creation_resp.id
-
-    # 3. Remember it for next time
-    cache[digest] = file_id
-    save_cache(cache_path, cache)
-    return file_id
 
 def render_pdf_page_to_image(pdf, page_index: int, dpi: int) -> Image.Image:
     page = pdf.get_page(page_index)
@@ -136,6 +100,63 @@ def ocr_pdf_text_overlay(input_pdf_path: str, output_pdf_path: str, lang: str = 
     print(f"Merging {len(ocred_pages)} pages into output PDF...")
     merge_pdf_pages(ocred_pages, output_pdf_path)
     print(f"Done. Output written to {output_pdf_path}")
+
+def get_lines_page_numbers(lines: list[int], page_lengths: list[int]) -> list[int]:
+    '''Get the pages corresponding to the given line numbers.
+
+    Returns a dict mapping page # to the lines to highlight on that page.'''
+    lines = sorted(lines)
+    pages = dict()
+    lines_ind = 0
+    cumulative_lines = 0
+    for page_index, page_length in enumerate(page_lengths):
+        while lines_ind < len(lines):
+            if lines[lines_ind] < cumulative_lines + page_length:
+                if page_index not in pages:
+                    pages[page_index] = []
+                pages[page_index].append(lines[lines_ind]-cumulative_lines)
+                lines_ind += 1
+            else:
+                break
+        cumulative_lines += page_length
+    return pages
+
+async def get_db_wages_citation_images(
+        db_wages_file_path: str,
+        db_wages_citation_query: str,
+        citation_prompt: str,
+        openai_client: AsyncOpenAI
+):
+    page_lengths = []
+    db_wages_doc = fitz.open(db_wages_file_path)
+    db_wages_file_text = ''
+    for page in db_wages_doc:
+        page_text = page.get_text().strip()
+        db_wages_file_text += page_text + '\n'
+        page_lengths.append(page_text.count('\n')+1)
+    citation_lines = await find_best_openai_lines(
+        text=db_wages_file_text,
+        query=db_wages_citation_query,
+        citation_prompt=citation_prompt,
+        openai_client=openai_client,
+    )
+    print(f'openai lines: {citation_lines}')
+    print('\n'.join([db_wages_file_text.splitlines()[i] for i in citation_lines]))
+    citation_pages_dict = get_lines_page_numbers(citation_lines, page_lengths)
+
+    citation_pages = []
+    citation_images = []
+    for page, lines in citation_pages_dict.items():
+        citation_pages.append(page)
+        citation_images.append(
+            render_line_highlights(
+                text = db_wages_doc[page].get_text().strip(),
+                highlight_lines = lines
+            )
+        )
+    db_wages_doc.close()
+
+    return citation_images, citation_pages
 
 async def openai_payroll_compliance_table(
         openai_client: AsyncOpenAI,

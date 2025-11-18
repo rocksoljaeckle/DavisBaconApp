@@ -9,3 +9,4 @@ ssl/
 tests/
 .idea/
 __pycache__/
+static/

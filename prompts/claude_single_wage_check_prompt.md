@@ -91,4 +91,4 @@ Respond with JSON only, no additional text.
 - Ensure that your calculation is based on the base hourly rate only, excluding any overtime or premium pay
 - The 'overtime_rate' field should contain the Davis-Bacon overtime rate (typically 1.5x the prevailing wage) when applicable, or null if not applicable
 - Provide thorough reasoning for each compliance determination to support audit trails and review processes
-- - The paid rate is *not* the overtime rate. Only use the base hourly rate for compliance comparisons - *do not* "blend" or "weigh" the overtime and regular/base wages - use *only* the base wages.
+- - The paid rate is *not* the overtime rate. Only use the base hourly rate for compliance comparisons - **DO NOT** "blend" or "weigh" the overtime and regular/base wages - use **ONLY** the base wages.
