@@ -20,7 +20,11 @@ import fitz
 
 from GlobalUtils.ocr import whisper_pdf_text_extraction
 from GlobalUtils.openai_uploading import get_or_upload_async
-from GlobalUtils.citation import find_best_openai_lines, render_line_highlights
+from GlobalUtils.citation import (
+    find_best_openai_lines,
+    render_line_highlights,
+    render_pdf_bboxes_to_images
+)
 
 
 class EmployeeWageCheck(BaseModel):
@@ -34,6 +38,7 @@ class EmployeeWageCheck(BaseModel):
     paid_rate: float
     compliance_reasoning: str
     compliance: str
+    citation_lines: list[str]
 
 class ComplianceTable(BaseModel):
     payroll_name: str
@@ -54,57 +59,84 @@ def report_parsing_error(error_message: str):
     """Report an error in parsing the compliance table."""
     return error_message
 
-def render_pdf_page_to_image(pdf, page_index: int, dpi: int) -> Image.Image:
-    page = pdf.get_page(page_index)
-    # scale factor: 72 pts per inch base
-    scale = dpi / 72.0
-    bitmap = page.render(scale=scale)
-    pil_img = bitmap.to_pil()
-    page.close()
-    bitmap.close()
-    return pil_img
+# <editor-fold> OCR functions - currently overshadowed by GlobalUtils.ocr, but kept for reference (=out of paranoia)
+# def render_pdf_page_to_image(pdf, page_index: int, dpi: int) -> Image.Image:
+#     page = pdf.get_page(page_index)
+#     # scale factor: 72 pts per inch base
+#     scale = dpi / 72.0
+#     bitmap = page.render(scale=scale)
+#     pil_img = bitmap.to_pil()
+#     page.close()
+#     bitmap.close()
+#     return pil_img
+#
+
+# def ocr_image_to_pdf_bytes(img: Image.Image, lang: str, oem: Optional[int], psm: Optional[int], tesseract_config = '') -> bytes:
+#     config_parts = []
+#     if oem is not None:
+#         config_parts.append(f"--oem {oem}")
+#     if psm is not None:
+#         config_parts.append(f"--psm {psm}")
+#     config = " ".join(config_parts) if config_parts else None
+#     # returns a complete single-page PDF (bytes) with an invisible text layer
+#     return pytesseract.image_to_pdf_or_hocr(img, lang=lang, extension="pdf", config=tesseract_config)
+#
+#
+# def merge_pdf_pages(pdf_pages: list[bytes], out_path: str) -> None:
+#     writer = PdfWriter()
+#     for idx, page_bytes in enumerate(pdf_pages):
+#         reader = PdfReader(io.BytesIO(page_bytes))
+#         # sanity: expect exactly one page per chunk
+#         if len(reader.pages) == 0:
+#             continue
+#         writer.add_page(reader.pages[0])
+#     with open(out_path, "wb") as f:
+#         writer.write(f)
+#
+# def ocr_pdf_text_overlay(input_pdf_path: str, output_pdf_path: str, lang: str = "eng", dpi: int  = 300, tesseract_config = ''):
+#     pdf = pdfium.PdfDocument(input_pdf_path)
+#     num_pages = len(pdf)
+#     ocred_pages = []
+#     for page_index in range(num_pages):
+#         print(f"OCRing page {page_index+1}/{num_pages}...")
+#         img = render_pdf_page_to_image(pdf, page_index, dpi)
+#         ocred_pdf_bytes = ocr_image_to_pdf_bytes(img, lang, oem=1, psm=3, tesseract_config = tesseract_config)
+#         ocred_pages.append(ocred_pdf_bytes)
+#     pdf.close()
+#     print(f"Merging {len(ocred_pages)} pages into output PDF...")
+#     merge_pdf_pages(ocred_pages, output_pdf_path)
+#     print(f"Done. Output written to {output_pdf_path}")
+#</editor-fold>
 
 
-def ocr_image_to_pdf_bytes(img: Image.Image, lang: str, oem: Optional[int], psm: Optional[int], tesseract_config = '') -> bytes:
-    config_parts = []
-    if oem is not None:
-        config_parts.append(f"--oem {oem}")
-    if psm is not None:
-        config_parts.append(f"--psm {psm}")
-    config = " ".join(config_parts) if config_parts else None
-    # returns a complete single-page PDF (bytes) with an invisible text layer
-    return pytesseract.image_to_pdf_or_hocr(img, lang=lang, extension="pdf", config=tesseract_config)
+async def get_citation_images_from_line_hexes(
+        citation_line_hexes: list[str],
+        unstract_json: str,
+        pdf_path: str
+):
+    citation_lines = [int(hex, 16)-1 for hex in citation_line_hexes] # the -1 is because unstract hex lines are 1-indexed
+    line_whisper_boxes = [unstract_json['line_metadata'][line_ind] for line_ind in citation_lines]
 
+    print('line_whisper_boxes: ', line_whisper_boxes)
 
-def merge_pdf_pages(pdf_pages: list[bytes], out_path: str) -> None:
-    writer = PdfWriter()
-    for idx, page_bytes in enumerate(pdf_pages):
-        reader = PdfReader(io.BytesIO(page_bytes))
-        # sanity: expect exactly one page per chunk
-        if len(reader.pages) == 0:
-            continue
-        writer.add_page(reader.pages[0])
-    with open(out_path, "wb") as f:
-        writer.write(f)
+    line_boxes = [
+        {
+            'page': line_box[0],
+            'bbox': [0.01, (line_box[1] - line_box[2]) / line_box[3], 0.99, (line_box[1]) / line_box[3]]
+        }
+        for line_box in line_whisper_boxes
+    ]
 
-def ocr_pdf_text_overlay(input_pdf_path: str, output_pdf_path: str, lang: str = "eng", dpi: int  = 300, tesseract_config = ''):
-    pdf = pdfium.PdfDocument(input_pdf_path)
-    num_pages = len(pdf)
-    ocred_pages = []
-    for page_index in range(num_pages):
-        print(f"OCRing page {page_index+1}/{num_pages}...")
-        img = render_pdf_page_to_image(pdf, page_index, dpi)
-        ocred_pdf_bytes = ocr_image_to_pdf_bytes(img, lang, oem=1, psm=3, tesseract_config = tesseract_config)
-        ocred_pages.append(ocred_pdf_bytes)
-    pdf.close()
-    print(f"Merging {len(ocred_pages)} pages into output PDF...")
-    merge_pdf_pages(ocred_pages, output_pdf_path)
-    print(f"Done. Output written to {output_pdf_path}")
+    citation_images, citation_pages = render_pdf_bboxes_to_images(
+        citation_bboxes = line_boxes,
+        pdf_source=pdf_path,
+    )
+    return citation_images, citation_pages
 
 def get_lines_page_numbers(lines: list[int], page_lengths: list[int]) -> list[int]:
-    '''Get the pages corresponding to the given line numbers.
+    """Get the pages corresponding to the given line numbers.
 
-    Returns a dict mapping page # to the lines to highlight on that page.'''
+    Returns a dict mapping page # to the lines to highlight on that page."""
     lines = sorted(lines)
     pages = dict()
     lines_ind = 0
@@ -140,8 +172,6 @@ async def get_db_wages_citation_images(
         citation_prompt=citation_prompt,
         openai_client=openai_client,
     )
-    print(f'openai lines: {citation_lines}')
-    print('\n'.join([db_wages_file_text.splitlines()[i] for i in citation_lines]))
     citation_pages_dict = get_lines_page_numbers(citation_lines, page_lengths)
 
     citation_pages = []
@@ -204,7 +234,7 @@ async def openai_payroll_compliance_table(
     if payroll_ocr_str is not None:
         openai_compliance_input[0]['content'].append({
             'type': 'input_text',
-            'text': 'The following was extracted from the payroll file via OCR. Use it to cross-reference with the payroll file:\n' + payroll_ocr_str
+            'text': 'The following was extracted from the payroll file via OCR. Use it for citations and to cross-reference with the payroll file:\n' + payroll_ocr_str
         })
     if project_location_str is not None:
         openai_compliance_input[0]['content'].append({
@@ -275,7 +305,7 @@ async def claude_payroll_compliance_table(
     if payroll_ocr_str is not None:
         claude_compliance_input[0]['content'].append({
             'type': 'text',
-            'text': 'The following was extracted from the payroll file via OCR. Use it to cross-reference with the payroll file:\n' + payroll_ocr_str
+            'text': 'The following was extracted from the payroll file via OCR. Use it for citations and to cross-reference with the payroll file:\n' + payroll_ocr_str
         })
     if project_location_str is not None:
         claude_compliance_input[0]['content'].append({
@@ -303,7 +333,8 @@ async def claude_payroll_compliance_table(
                 overtime_rate=wage_check.get('overtime_rate'),
                 paid_rate=wage_check['paid_rate'],
                 compliance_reasoning=wage_check['compliance_reasoning'],
-                compliance=wage_check['compliance']
+                compliance=wage_check['compliance'],
+                citation_lines=wage_check['citation_lines']
             )
             for wage_check in claude_compliance_result['wage_checks']
         ]
@@ -469,7 +500,8 @@ async def claude_single_wage_check(
             overtime_rate=new_wage_check.get('overtime_rate'),
             paid_rate=new_wage_check['paid_rate'],
             compliance_reasoning=new_wage_check['compliance_reasoning'],
-            compliance=new_wage_check['compliance']
+            compliance=new_wage_check['compliance'],
+            citation_lines=new_wage_check['citation_lines'],
         )
     else:
         claude_wage_check = None # ehhh not sure if i love this
@@ -542,7 +574,7 @@ async def get_payroll_compliance_table(
         project_location_str: str|None = None,
         name_match_threshold: float = 80.
 ):
-    '''Get the payroll compliance table directly from the payroll and DB wages files (no OCR).'''
+    """Get the payroll compliance table directly from the payroll and DB wages files (no OCR)."""
     openai_compliance_task = openai_payroll_compliance_table(
         openai_client = openai_client,
         openai_model = openai_model,
@@ -575,6 +607,8 @@ async def get_payroll_compliance_table(
     elif claude_compliance_table is None:
         return openai_compliance_table, None, None, None
     # if we reach here, both are non-null - concordance time
+
+    # pair up wage checks by employee name similarity
     wage_check_comparisons = []
     for openai_ind, openai_wc in enumerate(openai_compliance_table.wage_checks):
         for claude_ind, claude_wc in enumerate(claude_compliance_table.wage_checks):
@@ -602,7 +636,10 @@ async def get_payroll_compliance_table(
             matched_wage_checks.append(claude_wc) # prefer claude
     unmatched_openai = [openai_compliance_table.wage_checks[ind] for ind in unmatched_openai_inds]
     unmatched_claude = [claude_compliance_table.wage_checks[ind] for ind in unmatched_claude_inds]
+
+
     print('Resolving disputed wage checks...')
+    #resolved matched but disputed wage checks
     disputed_resolution_tasks = [
         resolve_disputed_check(
             openai_wc = openai_wc,

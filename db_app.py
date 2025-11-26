@@ -25,13 +25,12 @@ from db_utils import (
     get_db_wages_citation_images,
     get_project_location,
     ComplianceTable,
-    EmployeeWageCheck
+    EmployeeWageCheck,
+    get_citation_images_from_line_hexes
 )
 from GlobalUtils.ocr import google_ocr_pdf_text_overlay, async_whisper_pdf_text_extraction
 from GlobalUtils.citation import (
-    get_unstract_citation_images,
-    render_line_highlights,
-    find_best_openai_lines
+    get_unstract_citation_images
 )
 from GlobalUtils.st_file_serving import StreamlitPDFServer
 
@@ -92,13 +91,18 @@ def show_citation_dialog(
 
         with st.spinner('Generating citation (~30 seconds) ...', show_time=True):
             try:
-                payroll_citation_task = get_unstract_citation_images(
-                    pdf_source=payroll_file_path,
-                    unstract_response_json=payroll_unstract_json,
-                    citation_query=payroll_citation_query,
-                    citation_prompt=st.session_state['citation_prompt'],
-                    openai_client=openai_client,
-                    return_page_numbers=True
+                # payroll_citation_task = get_unstract_citation_images(
+                #     pdf_source=payroll_file_path,
+                #     unstract_response_json=payroll_unstract_json,
+                #     citation_query=payroll_citation_query,
+                #     citation_prompt=st.session_state['citation_prompt'],
+                #     openai_client=openai_client,
+                #     return_page_numbers=True
+                # )
+                payroll_citation_task = get_citation_images_from_line_hexes(
+                    citation_line_hexes=wage_check.citation_lines,
+                    unstract_json=payroll_unstract_json,
+                    pdf_path = payroll_file_path
                 )
 
                 db_wages_citation_task = get_db_wages_citation_images(
@@ -157,6 +161,7 @@ def show_citation_dialog(
     else:
         st.warning('No citations found for this employee. The source may not be clearly identifiable in the document.')
 
+
 def render_compliance_results():
     """Render compliance results stored in session state."""
     if st.session_state['failed_indices']:
@@ -194,6 +199,7 @@ def render_compliance_results():
         st.session_state['editor_keys'] = [0 for _ in st.session_state['compliance_results']]
     citation_available = 'payroll_unstract_jsons' in st.session_state
     compliance_column_config = {
+        'citation_lines': None, # hide citation lines column
         'employee_name': st.column_config.Column('Employee Name', width=100),
         'title': st.column_config.Column('Payroll Title', width=150),
         'davis_bacon_classification': st.column_config.Column('Davis-Bacon Classification', width=400),
@@ -289,12 +295,6 @@ def get_compliance_results(
     db_wages_file_path = file_paths[-1]
     st.session_state['payroll_files_paths'] = file_paths[:-1]
     st.session_state['db_wages_file_path'] = db_wages_file_path
-    # db_wages_doc = fitz.open(db_wages_file_path)
-    # db_wages_file_text = ''
-    # for page in db_wages_doc:
-    #     db_wages_file_text += page.get_text() + '\n'
-    # db_wages_doc.close()
-    # st.session_state['db_wages_file_text'] = db_wages_file_text
 
     with open(config_dict['openai_compliance_matrix_prompt_path'], 'r', encoding='utf-8') as f:
         openai_compliance_matrix_prompt = f.read()
@@ -365,7 +365,8 @@ def get_compliance_results(
                 async_whisper_pdf_text_extraction(
                     unstract_api_key = st.session_state['global_config']['unstract_api_key'],
                     input_pdf_path = file_path,
-                    return_json = True
+                    return_json = True,
+                    add_line_nos=True
                 )
                 for file_path in st.session_state['payroll_files_paths']
             ]
@@ -466,9 +467,9 @@ if 'compliance_results' not in st.session_state:
 
     l_col, r_margin = st.columns([1, 2], gap='large')
 
-    payroll_files = l_col.container(border= True).file_uploader('**Upload the payroll files**', type = 'pdf', accept_multiple_files=True)
+    payroll_files = l_col.container(border= True).file_uploader('**Upload the payroll file(s)**', type = 'pdf', accept_multiple_files=True)
 
-    db_wages_file = l_col.container(border= True).file_uploader('**Upload the Davis-Bacon wages file**', type = 'pdf', accept_multiple_files=False)
+    db_wages_file = l_col.container(border= True).file_uploader('**Upload the Davis-Bacon wage determination file**', type = 'pdf', accept_multiple_files=False)
 
     file_processing_mode = st.pills(
         label = 'file processing mode ("unstract whisper" recommended)', options=['none', 'google ocr', 'unstract whisper'], default = 'unstract whisper', selection_mode = 'single')

@@ -11,6 +11,7 @@ For the given employee you'll need to:
 3. Calculate the total Davis-Bacon rate (base rate + fringe benefits)
 4. Compare this against the employee's actual paid rate (ignoring overtime or premium pay)
 5. Determine compliance status with detailed reasoning
+6. Provide citation lines from the payroll OCR text that support your determination
 
 
 ## Output Format
@@ -26,6 +27,7 @@ Provide your analysis to the report_wage_check_function as a JSON object with an
 - 'paid_rate': The employee's actual base hourly rate (excluding overtime/premiums)
 - 'compliance_reasoning': Detailed explanation of the compliance determination
 - 'compliance': Simple compliance indicator (see below)
+- 'citation_lines': An array of hex line numbers taken from the payroll OCR string that support your classification and rate determination - or an empty array, if not provided.
 
 ## Compliance Indicators
 
@@ -50,6 +52,9 @@ Mark compliance as uncertain ("?") when you encounter situations that require ad
 - The employee could be an apprentice subject to different wage scales
 - Missing or unclear data prevents definitive determination
 
+## Citation Lines
+Provide an array of hex line numbers from the payroll file that support your classification and rate determinations. These line numbers should be taken from the OCR text of the payroll file, such as "0x1b", "0x2f", etc. Do not include extraneous lines, but do include every line that is relevant to your response.
+
 ## Sample Output
 Call the report_wage_check function with input structured like this:
 ```json
@@ -63,7 +68,8 @@ Call the report_wage_check function with input structured like this:
   "overtime_rate": 68.25,
   "paid_rate": 42.00,
   "compliance_reasoning": "Employee classified as Electrician per Davis-Bacon schedule. Required rate is $32.50 base + $13.00 fringe = $45.50 total. Employee paid $42.00 base rate, which is $3.50 below requirement.",
-  "compliance": "✗"
+  "compliance": "✗",
+  "citation_lines": ["0x3e", "0x3f"]
 }
 ```
 If you cannot parse the provided file, call the report_parsing_error function with a message like this:
