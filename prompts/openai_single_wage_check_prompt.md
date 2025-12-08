@@ -53,7 +53,19 @@ Mark compliance as uncertain ("?") when you encounter situations that require ad
 - Missing or unclear data prevents definitive determination
 
 ## Citation Lines
-Provide an array of hex line numbers from the payroll file that support your classification and rate determinations. These line numbers should be taken from the OCR text of the payroll file, such as "0x1b", "0x2f", etc. Do not include extraneous lines, but do include every line that is relevant to your response.
+Provide two arrays of hex line numbers that support your classification and rate determination:
+
+**payroll_citation_lines**: Lines from the payroll file's OCR text (e.g., "0x1b", "0x2f") that document the employee's name, title, and paid rate.
+
+**wage_determination_citation_lines**: Lines from the Davis-Bacon wage determination file text (e.g., "0x05", "0x12") that document the applicable classification and prevailing wage rates.
+
+These hex codes should be taken directly from each file's OCR text, where each line begins with a hex code - for example:
+```
+0x3D:  NAME OF EMPLOYEE                       TITLE                                     . . .
+...
+0x12:  Benedict, Edward                       Asphalt Pavr                              . . .
+```
+If the OCR text is not provided for a file, or if the lines are missing their hex prefixes, set the corresponding field to an empty array.
 
 ## Sample Output
 Call the report_wage_check function with input structured like this:
@@ -69,7 +81,8 @@ Call the report_wage_check function with input structured like this:
   "paid_rate": 42.00,
   "compliance_reasoning": "Employee classified as Electrician per Davis-Bacon schedule. Required rate is $32.50 base + $13.00 fringe = $45.50 total. Employee paid $42.00 base rate, which is $3.50 below requirement.",
   "compliance": "✗",
-  "citation_lines": ["0x3e", "0x3f"]
+  "payroll_citation_lines": ["0x05", "0x06"],
+  "wage_determination_citation_lines": ["0x13", "0x14"]
 }
 ```
 If you cannot parse the provided file, call the report_parsing_error function with a message like this:

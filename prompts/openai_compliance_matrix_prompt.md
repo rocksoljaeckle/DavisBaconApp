@@ -1,7 +1,7 @@
 You are tasked with analyzing payroll data to ensure compliance with Davis-Bacon Act minimum wage requirements.
 
 ## Task Overview
-You will be provided a file containing Davis-Bacon wage rates, and a file containing the payroll for a construction project. If you cannot parse the provided payroll file, you will need to call the report_parsing_error function with an explanation of what went wrong. Otherwise, you will call the report_compliance_table function with the results of your analysis.
+You will be provided a file containing a Davis-Bacon wage determination, and a file containing the payroll for a construction project. If you cannot parse the provided payroll file, you will need to call the report_parsing_error function with an explanation of what went wrong. Otherwise, you will call the report_compliance_table function with the results of your analysis.
 
 Compare the provided payroll rates against the applicable Davis-Bacon minimum wage requirements. When calculating Davis-Bacon wages, add the base hourly rate plus fringe benefits to get the total prevailing wage. For payroll comparison, use only the employee's base hourly rate - ignore any overtime pay or premium rates they may have received.
 
@@ -11,7 +11,7 @@ For each employee, you'll need to:
 3. Calculate the total Davis-Bacon rate (base rate + fringe benefits)
 4. Compare this against the employee's actual paid rate (ignoring overtime or premium pay)
 5. Determine compliance status with detailed reasoning
-6. Provide citation lines from the payroll OCR text that support your determinations
+6. Provide citation lines from the Davis-Bacon wage determination file and payroll OCR text that support your determinations
 
 
 ## Output Format
@@ -27,7 +27,8 @@ Provide your analysis as a JSON object with a 'payroll_name' attribute and a 'wa
 - 'paid_rate': The employee's actual base hourly rate (excluding overtime/premiums)
 - 'compliance_reasoning': Detailed explanation of the compliance determination
 - 'compliance': Simple compliance indicator (see below)
-- 'citation_lines': An array of hex line numbers taken from the payroll OCR string that support your classification and rate determinations - or an empty array, if not provided.
+- 'payroll_citation_lines': An array of hex line numbers from the payroll OCR text that support your classification and rate determinations - or an empty array, if not provided.
+- 'wage_determination_citation_lines': An array of hex line numbers from the Davis-Bacon wage determination OCR text that support your classification and rate determinations - or an empty array, if not provided.
 
 ## Compliance Indicators
 
@@ -53,20 +54,24 @@ Mark compliance as uncertain ("?") when you encounter situations that require ad
 - Missing or unclear data prevents definitive determination
 
 ## Citation Lines
-For each employee wage check, provide an array of hex line numbers from the payroll file that support your classification and rate determinations. These line numbers should be taken from the OCR text of the payroll file, such as "0x1b", "0x2f", etc. Do not include extraneous lines, but do include every line that is relevant to your response.
+For each employee wage check, provide two arrays of hex line numbers that support your classification and rate determinations:
 
-These hex codes should be taken directly from the payroll file's OCR text, where each line begins with a hex code - for example:
+**payroll_citation_lines**: Lines from the payroll file's OCR text (e.g., "0x1b", "0x2f") that document the employee's name, title, and paid rate.
+
+**wage_determination_citation_lines**: Lines from the Davis-Bacon wage determination file text (e.g., "0x05", "0x12") that document the applicable classification and prevailing wage rates.
+
+
+These hex codes should be taken directly from each file's OCR text, where each line begins with a hex code - for example:
 ```
 0x3D:  NAME OF EMPLOYEE                       TITLE                                     . . .
 0x12:  Benedict, Edward                       Asphalt Pavr                              . . .
 ```
-If you are not provided with the OCR text, or if the lines are missing their hex prefixes, set this field to an empty array.
+If the OCR text is not provided for a file, or if the lines are missing their hex prefixes, set the corresponding field to an empty array.
 
 ## Sample Output
 Call the report_compliance_table function with input structured like this:
 ```json
 {
-  "success": true,
   "payroll_name": "Project Alpha - Week 1",
   "wage_checks": [
     {
@@ -80,7 +85,8 @@ Call the report_compliance_table function with input structured like this:
       "paid_rate": 42.00,
       "compliance_reasoning": "Employee classified as Electrician per Davis-Bacon schedule. Required rate is $32.50 base + $13.00 fringe = $45.50 total. Employee paid $42.00 base rate, which is $3.50 below requirement.",
       "compliance": "✗",
-      "citation_lines": ["0x05", "0x12", "0x13", "0x14"]
+      "payroll_citation_lines": ["0x05", "0x06"],
+      "wage_determination_citation_lines": ["0x13", "0x14"]
     },
     {
       "employee_name": "Jane Doe",
@@ -93,7 +99,8 @@ Call the report_compliance_table function with input structured like this:
       "paid_rate": 39.00,
       "compliance_reasoning": "Employee classified as Laborer per Davis-Bacon schedule. Required rate is $25.75 base + $9.50 fringe = $35.25 total. Employee paid $39.00 base rate, which exceeds requirement by $3.75.",
       "compliance": "✓",
-      "citation_lines": ["0x1b", "0x2f"]
+      "payroll_citation_lines": ["0x1b"],
+      "wage_determination_citation_lines": ["0x2f"]
     },
     {
       "employee_name": "Mike Johnson",
@@ -106,7 +113,8 @@ Call the report_compliance_table function with input structured like this:
       "paid_rate": 34.50,
       "compliance_reasoning": "Employee title 'Construction Helper' mapped to Laborer classification, but this may qualify for apprentice rates if employee is in registered program. Required rate is $35.25, paid rate is $34.50. Requires verification of apprentice status.",
       "compliance": "?",
-      "citation_lines": ["0xa3"]
+      "payroll_citation_lines": ["0xa3"],
+      "wage_determination_citation_lines": ["0x2f"]
     }
   ]
 }

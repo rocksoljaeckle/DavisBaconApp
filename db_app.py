@@ -25,18 +25,19 @@ import nest_asyncio
 nest_asyncio.apply() # todo this is hacky - necessary?
 
 
-from db_utils import (
-    get_payroll_compliance_table,
-    get_db_wages_citation_images,
-    get_project_location,
-    ComplianceTable,
-    EmployeeWageCheck,
-    get_citation_images_from_line_hexes
-)
-from GlobalUtils.ocr import google_ocr_pdf_text_overlay, async_whisper_pdf_text_extraction
-from GlobalUtils.citation import (
-    get_unstract_citation_images
-)
+# from db_utils import (
+#     get_payroll_compliance_table,
+#     get_db_wages_citation_images,
+#     get_project_location,
+#     ComplianceTable,
+#     EmployeeWageCheck,
+#     get_citation_images_from_line_hexes
+# )
+from db_utils import ComplianceChecker, EmployeeWageCheck, ComplianceTable
+# from GlobalUtils.ocr import google_ocr_pdf_text_overlay, async_whisper_pdf_text_extraction
+# from GlobalUtils.citation import (
+#     get_unstract_citation_images
+# )
 from GlobalUtils.st_file_serving import StreamlitPDFServer
 
 class DisputeItem:
@@ -142,7 +143,6 @@ def reset_st_session_state():
         'payroll_files_paths',
         'db_wages_file_path',
         'failed_indices',
-        'payroll_unstract_jsons',
         'citation_cache',
     ]
     for key in keys_to_clear:
@@ -157,22 +157,25 @@ def show_help():
 @st.dialog('View Citation Source', width='large', on_dismiss = destroy_file_servers)
 def show_citation_dialog(
         wage_check: EmployeeWageCheck,
-        payroll_file_path: str,
-        db_wages_file_path: str,
-        payroll_unstract_json: dict
+        compliance_checker: ComplianceChecker,
+        payroll_index: int,
+        employee_index: int,
+        disputed: bool = False,
+        payroll_citation_line_hexes_override: list[str] | None = None,
+        db_wages_citation_line_hexes_override: list[str] | None = None,
 ):
     """Show citation source for a given wage check."""
     st.markdown(f'### Finding source for: {wage_check.employee_name}')
-    st.markdown(f'**Title:** {wage_check.title} | **Paid Rate:** \\${wage_check.paid_rate:,.2f} | **Davis-Bacon Classification:** {wage_check.davis_bacon_classification} | **Davis-Bacon Total Rate:** \\${wage_check.davis_bacon_total_rate:,.2f}')
-
-    # Generate citation query and cache key
-    payroll_citation_query = f'Employee Name: {wage_check.employee_name}, Paid Rate: {wage_check.paid_rate}'
-    db_wages_citation_query = f'Please find lines for the classification _and_ the rate - Davis-Bacon Classification: {wage_check.davis_bacon_classification}, Davis-Bacon Base Rate: {wage_check.davis_bacon_base_rate}, Davis-Bacon Fringe Rate: {wage_check.davis_bacon_fringe_rate}'
-    cache_key = f'{payroll_file_path}_{payroll_citation_query}_{db_wages_citation_query}'
+    if not disputed:
+        st.markdown(f'**Title:** {wage_check.title} | **Paid Rate:** \\${wage_check.paid_rate:,.2f} | **Davis-Bacon Classification:** {wage_check.davis_bacon_classification} | **Davis-Bacon Total Rate:** \\${wage_check.davis_bacon_total_rate:,.2f}')
 
     # Initialize cache if it doesn't exist
     if 'citation_cache' not in st.session_state:
         st.session_state['citation_cache'] = {}
+    if disputed:
+        cache_key = f'disputed_{payroll_index}_{employee_index}'
+    else:
+        cache_key = f'{payroll_index}_{employee_index}'
 
     start_time = time.time()
     # Check if citation is already cached
@@ -180,38 +183,23 @@ def show_citation_dialog(
         (db_wages_citation_images, db_wages_citation_page_numbers), (payroll_citation_images, payroll_citation_page_numbers) = st.session_state['citation_cache'][cache_key]
         st.info('Loaded source from cache')
     else:
-        # Initialize OpenAI client
-        openai_client = AsyncOpenAI(api_key=st.session_state['global_config']['openai_api_key'])
-
         with st.spinner('Generating citation (~30 seconds) ...', show_time=True):
             try:
-                # payroll_citation_task = get_unstract_citation_images(
-                #     pdf_source=payroll_file_path,
-                #     unstract_response_json=payroll_unstract_json,
-                #     citation_query=payroll_citation_query,
-                #     citation_prompt=st.session_state['citation_prompt'],
-                #     openai_client=openai_client,
-                #     return_page_numbers=True
-                # )
-                payroll_citation_task = get_citation_images_from_line_hexes(
-                    citation_line_hexes=wage_check.citation_lines,
-                    unstract_json=payroll_unstract_json,
-                    pdf_path = payroll_file_path
+                if payroll_citation_line_hexes_override is None:
+                    payroll_citation_line_hexes = wage_check.payroll_citation_lines
+                else:
+                    payroll_citation_line_hexes = payroll_citation_line_hexes_override
+                if db_wages_citation_line_hexes_override is None:
+                    wage_determination_citation_line_hexes = wage_check.wage_determination_citation_lines
+                else:
+                    wage_determination_citation_line_hexes = db_wages_citation_line_hexes_override
+                payroll_citation_images, payroll_citation_page_numbers = compliance_checker.get_payroll_citation_images_from_line_hexes(
+                    citation_line_hexes=payroll_citation_line_hexes
                 )
 
-                db_wages_citation_task = get_db_wages_citation_images(
-                    db_wages_file_path = db_wages_file_path,
-                    db_wages_citation_query = db_wages_citation_query,
-                    citation_prompt=st.session_state['citation_prompt'],
-                    openai_client = openai_client,
+                db_wages_citation_images, db_wages_citation_page_numbers = compliance_checker.get_db_wages_citation_images_from_line_hexes(
+                    citation_line_hexes=wage_determination_citation_line_hexes
                 )
-                (db_wages_citation_images, db_wages_citation_page_numbers),  (payroll_citation_images, payroll_citation_page_numbers) = asyncio.run(
-                    asyncio.gather(
-                        db_wages_citation_task,
-                        payroll_citation_task
-                    )
-                )
-                # Cache the result
                 st.session_state['citation_cache'][cache_key] = (db_wages_citation_images, db_wages_citation_page_numbers), (payroll_citation_images, payroll_citation_page_numbers)
             except Exception as e:
                 st.error(f'Error generating citation: {str(e)}')
@@ -226,10 +214,10 @@ def show_citation_dialog(
         main_col, margin = st.columns([8,1])
         with main_col:
             if 'payroll_file_server' not in st.session_state:
-                st.session_state['payroll_file_server'] = StreamlitPDFServer(payroll_file_path)
+                st.session_state['payroll_file_server'] = StreamlitPDFServer(compliance_checker.payroll_file_path)
                 st.session_state['payroll_file_server'].serve_pdf()
             if 'db_wages_file_server' not in st.session_state:
-                st.session_state['db_wages_file_server'] = StreamlitPDFServer(db_wages_file_path)
+                st.session_state['db_wages_file_server'] = StreamlitPDFServer(compliance_checker.db_wages_file_path)
                 st.session_state['db_wages_file_server'].serve_pdf()
 
             with st.expander('Payroll source(s)', expanded = True):
@@ -267,50 +255,70 @@ def get_compliance_symbol(compliance: str):
         case _:
             return compliance
 
-def show_employee_additional_info(employee_data: dict, employee_wage_check: EmployeeWageCheck, payroll_index: int):
+def show_employee_additional_info(wage_check: EmployeeWageCheck, compliance_checker: ComplianceChecker, employee_index: int, payroll_index: int):
     """Show additional information for a given employee."""
-    compliance_check_symbol = get_compliance_symbol(employee_data['compliance'])
-    st.markdown(f'**"{employee_data["employee_name"]}**": {compliance_check_symbol}')
+    compliance_check_symbol = get_compliance_symbol(ftfy.fix_text(wage_check.compliance))
+    st.markdown(f'**"{wage_check.employee_name}**": {compliance_check_symbol}')
     l_col, r_col = st.columns([1, 9])
     with l_col.popover('Additional Info'):
-        st.markdown(f'**Employee Name:** {employee_data["employee_name"]}')
-        st.markdown(f'**Title:** {employee_data["title"]}')
-        st.markdown(f'**Davis-Bacon Classification:** {employee_data["davis_bacon_classification"]}')
-        st.markdown(f'**Davis-Bacon Total Rate:** ${employee_data["davis_bacon_total_rate"]:,.2f}')
-        st.markdown(f'**Paid Rate:** ${employee_data["paid_rate"]:,.2f}')
+        st.markdown(f'**Employee Name:** {wage_check.employee_name}')
+        st.markdown(f'**Title:** {wage_check.title}')
+        st.markdown(f'**Davis-Bacon Classification:** {wage_check.davis_bacon_classification}')
+        st.markdown(f'**Davis-Bacon Total Rate:** ${wage_check.davis_bacon_total_rate:,.2f}')
+        st.markdown(f'**Paid Rate:** ${wage_check.paid_rate:,.2f}')
         st.markdown(f'**Compliance:** {compliance_check_symbol}')
         st.markdown('**Reasoning:**')
         st.html(f"""
                 <div style="font-size:16px; font-family: monospace;">
-                {employee_data['compliance_reasoning']}
+                {wage_check.compliance_reasoning}
                 </div>
                 """)
-    if r_col.button(f'show citation for {employee_data["employee_name"]}',
-                    key=f'show_citation_{payroll_index}_{employee_data["index"]}'):
-        wage_check = employee_wage_check
+    if r_col.button(f'show citation for {wage_check.employee_name}',
+                    key=f'show_citation_{payroll_index}_{employee_index}'):
         show_citation_dialog(
             wage_check=wage_check,
-            payroll_file_path=st.session_state['payroll_files_paths'][payroll_index],
-            db_wages_file_path=st.session_state['db_wages_file_path'],
-            payroll_unstract_json=st.session_state['payroll_unstract_jsons'][payroll_index],
+            compliance_checker=compliance_checker,
+            payroll_index=payroll_index,
+            employee_index=employee_index,
+            disputed = False
         )
 
-def show_disputed_employee_additional_info(selected_openai_wage_check: EmployeeWageCheck, selected_claude_wage_check: EmployeeWageCheck, selected_index: int, dispute_table: DisputeTable):
+def show_disputed_employee_additional_info(
+        selected_openai_wage_check: EmployeeWageCheck, 
+        selected_claude_wage_check: EmployeeWageCheck, 
+        selected_dispute_index: int,
+        payroll_index: int,
+        dispute_table: DisputeTable,
+        compliance_checker: ComplianceChecker,
+):
     st.write(f'#### Selected - {selected_openai_wage_check.employee_name}')
-    st.write(dispute_table.get_row_markdown(selected_index))
-    l_col, r_col = st.columns([1, 9])
+    st.write(dispute_table.get_row_markdown(selected_dispute_index))
+    l_col, mid_col, r_col = st.columns([1, 1, 8])
     with l_col.popover('OpenAI reasoning'):
         st.html(f"""
         <div style="font-size:16px; font-family: monospace;">
             {selected_openai_wage_check.compliance_reasoning}
         </div>
         """)
-    with r_col.popover('Claude reasoning'):
+    with mid_col.popover('Claude reasoning'):
         st.html(f"""
         <div style="font-size:16px; font-family: monospace;">
             {selected_claude_wage_check.compliance_reasoning}
         </div>
         """)
+    if r_col.button(f'show citation for {selected_openai_wage_check.employee_name}', key=f'disputed_show_citation_{payroll_index}_{selected_dispute_index}'):
+        #show all citation lines, from both models
+        payroll_citation_line_hexes = list(set(selected_openai_wage_check.payroll_citation_lines + selected_claude_wage_check.payroll_citation_lines))
+        wage_determination_citation_line_hexes = list(set(selected_openai_wage_check.wage_determination_citation_lines + selected_claude_wage_check.wage_determination_citation_lines))
+        show_citation_dialog(
+            wage_check=selected_openai_wage_check,
+            compliance_checker=compliance_checker,
+            payroll_index=payroll_index,
+            employee_index=selected_dispute_index,
+            disputed = True,
+            payroll_citation_line_hexes_override = payroll_citation_line_hexes,
+            db_wages_citation_line_hexes_override = wage_determination_citation_line_hexes,
+        )
 
 def get_tables_html(compliance_results: list[dict]):
     """Get HTML representation of compliance results tables."""
@@ -334,7 +342,7 @@ def get_aggrid_options(df: DataFrame, hidden_cols: list[str], cell_style_jscode:
         gb.configure_column(hidden, hide = True)
     return gb.build()
 
-def render_compliance_results():
+def render_compliance_results(cell_style_jscode: JsCode):
     """Render compliance results stored in session state."""
     if st.session_state['failed_indices']:
         st.error(
@@ -355,10 +363,11 @@ def render_compliance_results():
         reset_st_session_state()
         st.rerun()
 
-
-    citation_available = 'payroll_unstract_jsons' in st.session_state
     for payroll_index, compliance_result in enumerate(st.session_state['compliance_results']):
+        compliance_checker = compliance_result['compliance_checker']
+
         file_name = compliance_result['file_name']
+
         compliance_table = compliance_result['compliance_table']
 
         # prepare data for aggrid
@@ -371,26 +380,35 @@ def render_compliance_results():
         data.drop('overtime_rate', axis=1, inplace=True, errors='ignore')
         data.drop('citation_lines', axis=1, inplace=True, errors='ignore')
 
-        grid_options = get_aggrid_options(data, hidden_cols=['index', 'compliance_reasoning', 'citation_lines'], cell_style_jscode=cell_style_jscode)
+        grid_options = get_aggrid_options(data, hidden_cols=['index', 'compliance_reasoning', 'payroll_citation_lines', 'wage_determination_citation_lines'], cell_style_jscode=cell_style_jscode)
         with st.expander(label=f'({file_name}) - {compliance_table.payroll_name}', expanded=False):
-            st.write(f'**Project location**: {st.session_state['project_location_strs'][payroll_index]}')
-            st.markdown('_Select an employee/row to view additional information (below table)_')
+            st.write(f'**Project location**: {compliance_checker.project_location_str}')
 
-            #display agreed data
-            grid_response = AgGrid(
-                data,
-                gridOptions=grid_options,
-                update_mode='SELECTION_CHANGED',
-                key=f'compliance_table_{payroll_index}_aggrid',
-                allow_unsafe_jscode=True,
-                height = None
-            )
-            selected = grid_response['selected_rows']
+            if len(data) == 0:
+                if compliance_result['disputed_wage_checks']:
+                    st.info('No agreed wage checks between OpenAI and Claude for this payroll.')
+                else:
+                    st.info('No employees found in payroll.')
+            else:
+                st.markdown('_Select an employee/row to view additional information (below table)_')
+                #display agreed data
+                grid_response = AgGrid(
+                    data,
+                    gridOptions=grid_options,
+                    update_mode='SELECTION_CHANGED',
+                    key=f'compliance_table_{payroll_index}_aggrid',
+                    allow_unsafe_jscode=True,
+                    height = None
+                )
+                selected = grid_response['selected_rows']
 
-            if selected is not None and len(selected) > 0:
-                employee_data = selected.iloc[0]
-                employee_wage_check = compliance_table.wage_checks[employee_data['index']]
-                show_employee_additional_info(employee_data, employee_wage_check, payroll_index)
+                if selected is not None and len(selected) > 0:
+                    employee_data = selected.iloc[0]
+                    employee_index = employee_data['index']
+                    employee_wage_check = compliance_table.wage_checks[employee_index]
+                    compliance_checker = compliance_result['compliance_checker']
+                    show_employee_additional_info(employee_wage_check, compliance_checker, employee_index, payroll_index)
+
 
             #show disputed data if present
             if compliance_result['disputed_wage_checks']:
@@ -412,10 +430,17 @@ def render_compliance_results():
                 )
                 disputed_selected = disputed_data_response['selected_rows']
                 if disputed_selected is not None and len(disputed_selected) > 0:
-                    selected_index = disputed_selected.iloc[0]['index']
-                    selected_openai_wage_check = dispute_table.wage_checks[selected_index][0]
-                    selected_claude_wage_check = dispute_table.wage_checks[selected_index][1]
-                    show_disputed_employee_additional_info(selected_openai_wage_check, selected_claude_wage_check, selected_index, dispute_table)
+                    selected_dispute_index = disputed_selected.iloc[0]['index']
+                    selected_openai_wage_check = dispute_table.wage_checks[selected_dispute_index][0]
+                    selected_claude_wage_check = dispute_table.wage_checks[selected_dispute_index][1]
+                    show_disputed_employee_additional_info(
+                        selected_openai_wage_check,
+                        selected_claude_wage_check,
+                        selected_dispute_index,
+                        payroll_index,
+                        dispute_table,
+                        compliance_checker,
+                    )
 
             if compliance_result['unmatched_openai']:
                 st.warning('The following wage checks were found only by OpenAI:')
@@ -429,20 +454,16 @@ def render_compliance_results():
 
 def get_compliance_results(
         payroll_files,
-        db_wages_file,
-        file_processing_mode: str
+        db_wages_file
 ):
     """Get compliance results for uploaded payroll and Davis-Bacon wages files."""
     st.success('Files uploaded successfully!')
 
     config_dict = load_config()
     files_save_dir = config_dict['files_save_dir']
-    openai_api_key = config_dict['openai_api_key']
-    openai_client = AsyncOpenAI(api_key=openai_api_key)
-    anthropic_api_key = st.session_state['global_config']['anthropic_api_key']
-    anthropic_client = AsyncAnthropic(api_key=anthropic_api_key)
-    set_default_openai_key(openai_api_key)
-    openai_files_cache_path = config_dict['openai_files_cache_path']
+    # openai_api_key = config_dict['openai_api_key']
+    # anthropic_api_key = st.session_state['global_config']['anthropic_api_key']
+    # openai_files_cache_path = config_dict['openai_files_cache_path']
 
     upload_files = [*payroll_files, db_wages_file]
     file_paths = []
@@ -452,6 +473,7 @@ def get_compliance_results(
             f.write(file.read())
         file_paths.append(curr_path)
     db_wages_file_path = file_paths[-1]
+
     st.session_state['payroll_files_paths'] = file_paths[:-1]
     st.session_state['db_wages_file_path'] = db_wages_file_path
 
@@ -466,102 +488,44 @@ def get_compliance_results(
     with open(config_dict['project_location_prompt_path'], 'r', encoding='utf-8') as f:
         project_location_prompt = f.read()
 
-    get_location_partial = partial(
-        get_project_location,
-        project_location_prompt = project_location_prompt,
-        db_wages_file_path = db_wages_file_path,
-        gcloud_api_key = st.session_state['global_config']['gcloud_api_key'],
-        openai_files_cache_path = openai_files_cache_path,
-        openai_client=openai_client,
-        openai_model=config_dict['openai_model']
-    )
-    compliance_check_partial = partial(
-        get_payroll_compliance_table,
-        openai_client=openai_client,
-        openai_model=config_dict['openai_model'],
-        openai_compliance_matrix_prompt=openai_compliance_matrix_prompt,
-        openai_single_wage_check_prompt = openai_single_wage_check_prompt,
-        anthropic_client=anthropic_client,
-        claude_model=config_dict['claude_model'],
-        claude_compliance_matrix_prompt=claude_compliance_matrix_prompt,
-        claude_single_wage_check_prompt = claude_single_wage_check_prompt,
-        db_wages_file_path=db_wages_file_path,
-        openai_files_cache_path=openai_files_cache_path
-    )
-    match file_processing_mode:
-        case 'none':
-            project_locations_tasks = [get_location_partial(payroll_file_path = file_path) for file_path in st.session_state['payroll_files_paths']]
-            st.session_state['project_location_strs'] = asyncio.run(asyncio.gather(*project_locations_tasks))
-            compliance_check_coroutines = [
-                compliance_check_partial(
-                    payroll_file_path = file_path,
-                    project_location_str = project_location_str
-                )
-                for file_path, project_location_str in zip(st.session_state['payroll_files_paths'], st.session_state['project_location_strs'])
-            ]
-        case 'google ocr':
-            ocred_payroll_paths = []
-            with tempfile.TemporaryDirectory() as tmpdirname:
-                for payroll_file_path in st.session_state['payroll_files_paths']:
-                    output_pdf_path = os.path.join(tmpdirname, 'ocr_'+os.path.basename(payroll_file_path))
-                    google_ocr_pdf_text_overlay(
-                        input_pdf_path=payroll_file_path,
-                        output_pdf_path=output_pdf_path,
-                        dpi=300
-                    )
-                    ocred_payroll_paths.append(output_pdf_path)
-                project_locations_tasks = [get_location_partial(payroll_file_path=file_path) for file_path in ocred_payroll_paths]
-                st.session_state['project_location_strs'] = asyncio.run(asyncio.gather(*project_locations_tasks))
-                compliance_check_coroutines = [
-                    compliance_check_partial(
-                        payroll_file_path=file_path,
-                        project_location_str=project_location_str
-                    )
-                    for file_path, project_location_str in zip(ocred_payroll_paths, st.session_state['project_location_strs'])
-                ]
-        case 'llmwhisperer':
-            ocr_coroutines = [
-                async_whisper_pdf_text_extraction(
-                    unstract_api_key = st.session_state['global_config']['unstract_api_key'],
-                    input_pdf_path = file_path,
-                    return_json = True,
-                    add_line_nos=True
-                )
-                for file_path in st.session_state['payroll_files_paths']
-            ]
-            st.session_state['payroll_unstract_jsons'] = asyncio.run(asyncio.gather(*ocr_coroutines))
-            payroll_ocr_strs = [unstract_json['result_text'] for unstract_json in st.session_state['payroll_unstract_jsons']]
-            project_locations_tasks = [
-                get_location_partial(
-                    payroll_file_path = file_path,
-                    payroll_ocr_str = ocr_str
-                )
-                for file_path, ocr_str in zip(st.session_state['payroll_files_paths'], payroll_ocr_strs)
-            ]
-            st.session_state['project_location_strs'] = asyncio.run(asyncio.gather(*project_locations_tasks))
-            compliance_check_coroutines = [
-                compliance_check_partial(
-                    payroll_file_path = file_path,
-                    payroll_ocr_str = ocr_str,
-                    project_location_str = project_location_str
-                )
-                for file_path, ocr_str, project_location_str in zip(st.session_state['payroll_files_paths'], payroll_ocr_strs, st.session_state['project_location_strs'])
-            ]
-    task_results = asyncio.run(asyncio.gather(*compliance_check_coroutines))
+    compliance_checkers = [
+        ComplianceChecker(
+            db_wages_file_path=db_wages_file_path,
+            payroll_file_path = payroll_path,
+            openai_compliance_matrix_prompt = openai_compliance_matrix_prompt,
+            openai_single_wage_check_prompt = openai_single_wage_check_prompt,
+            claude_compliance_matrix_prompt = claude_compliance_matrix_prompt,
+            claude_single_wage_check_prompt = claude_single_wage_check_prompt,
+            project_location_prompt = project_location_prompt,
+            openai_api_key = st.session_state['global_config']['openai_api_key'],
+            anthropic_api_key = st.session_state['global_config']['anthropic_api_key'],
+            unstract_api_key = st.session_state['global_config']['unstract_api_key'],
+            gcloud_api_key=st.session_state['global_config']['gcloud_api_key'],
+            openai_model = config_dict['openai_model'],
+            claude_model = config_dict['claude_model'],
+            openai_files_cache_path= st.session_state['global_config']['openai_files_cache_path']
+        )
+        for payroll_path in st.session_state['payroll_files_paths']
+    ]
+
+    tasks_results = asyncio.run(asyncio.gather(
+        *[checker.get_payroll_compliance_table() for checker in compliance_checkers]
+    ))
     compliance_results = []
     failed_indices = []
     for payroll_ind in range(len(st.session_state['payroll_files_paths'])):
         file_name = payroll_files[payroll_ind].name
-        compliance_table, disputed_wage_checks, unmatched_openai, unmatched_claude = task_results[payroll_ind]
+        compliance_table, disputed_wage_checks, unmatched_openai, unmatched_claude = tasks_results[payroll_ind]
         if compliance_table is not None:
             compliance_table = fix_table_checks(compliance_table)
         compliance_results.append(
             {
                 'file_name': file_name,
+                'compliance_checker': compliance_checkers[payroll_ind],
                 'compliance_table': compliance_table,
                 'disputed_wage_checks': disputed_wage_checks,
                 'unmatched_openai': unmatched_openai,
-                'unmatched_claude': unmatched_claude
+                'unmatched_claude': unmatched_claude,
             }
         )
         if compliance_table is None:
@@ -654,18 +618,14 @@ if 'compliance_results' not in st.session_state:
 
     db_wages_file = l_col.container(border= True).file_uploader('**Upload the Davis-Bacon wage determination file**', type = 'pdf', accept_multiple_files=False)
 
-    file_processing_mode = st.pills(
-        label = 'file processing mode ("llmwhisperer" recommended)', options=['none', 'google ocr', 'llmwhisperer'], default = 'llmwhisperer', selection_mode = 'single'
-    )
-
     if st.button('Check Payroll Compliance'):
         if payroll_files and db_wages_file:
             with st.spinner('Checking compliance (may take several minutes)...', show_time=True):
-                st.session_state['compliance_results'], st.session_state['failed_indices'] = get_compliance_results(payroll_files, db_wages_file, file_processing_mode)
+                st.session_state['compliance_results'], st.session_state['failed_indices'] = get_compliance_results(payroll_files, db_wages_file)
             st.rerun()
         else:
             st.error('Please upload both payroll files and the Davis-Bacon wages file.')
 else:
-    render_compliance_results()
+    render_compliance_results(cell_style_jscode)
 if st.button("❓ Help", type = 'tertiary'):
     show_help()
