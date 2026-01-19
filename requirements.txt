@@ -118,7 +118,7 @@ python-json-logger==4.0.0
 python-multipart==0.0.20
 pytz==2025.2
 pywin32==311; platform_system == "Windows"
-pywinpty==3.0.2
+pywinpty==3.0.2; platform_system == "Windows"
 PyYAML==6.0.3
 pyzmq==27.1.0
 RapidFuzz==3.14.1
