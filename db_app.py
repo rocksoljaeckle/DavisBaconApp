@@ -6,27 +6,21 @@ from st_aggrid import (
     JsCode,
 )
 from streamlit_image_zoom import image_zoom
-from anthropic import AsyncAnthropic
-from openai import OpenAI, AsyncOpenAI
 import asyncio
 import tomli
 from pandas import DataFrame
 import uuid
 import os
 import ftfy
-import tempfile
-from functools import partial
 from rapidfuzz import fuzz
 from rapidfuzz.utils import default_process as rapidfuzz_default_process
 import time
-import requests
 
 import nest_asyncio
 nest_asyncio.apply() # todo this is hacky - necessary?
 
 
 from db_utils import ComplianceChecker, EmployeeWageCheck, ComplianceTable
-from GlobalUtils.st_file_serving import StreamlitPDFServer
 
 class DisputeItem:
     """Class to hold information about a single disputed attribute of a single employee"""
@@ -115,16 +109,6 @@ def fix_table_checks(compliance_table: ComplianceTable):
         wage_check.compliance = ftfy.fix_text(wage_check.compliance)
     return compliance_table
 
-def destroy_file_servers():
-    if 'payroll_file_server' in st.session_state:
-        st.session_state['payroll_file_server'].destroy()
-        del st.session_state['payroll_file_server']
-    if 'db_wages_file_server' in st.session_state:
-        st.session_state['db_wages_file_server'].destroy()
-        del st.session_state['db_wages_file_server']
-
-
-
 def reset_st_session_state():
     keys_to_clear = [
         'compliance_results',
@@ -155,7 +139,7 @@ def get_compliance_symbol(compliance: str):
         case _:
             return compliance
 
-@st.dialog('View Citation Source', width='large', on_dismiss = destroy_file_servers)
+@st.dialog('View Citation Source', width='large')
 def show_citation_dialog(
         wage_check: EmployeeWageCheck,
         compliance_checker: ComplianceChecker,
@@ -214,27 +198,18 @@ def show_citation_dialog(
 
         main_col, margin = st.columns([8,1])
         with main_col:
-            if 'payroll_file_server' not in st.session_state:
-                st.session_state['payroll_file_server'] = StreamlitPDFServer(compliance_checker.payroll_file_path)
-                st.session_state['payroll_file_server'].serve_pdf()
-            if 'db_wages_file_server' not in st.session_state:
-                st.session_state['db_wages_file_server'] = StreamlitPDFServer(compliance_checker.db_wages_file_path)
-                st.session_state['db_wages_file_server'].serve_pdf()
-
             with st.expander('Payroll source(s)', expanded = True):
                 for i, (img, page_no) in enumerate(zip(payroll_citation_images, payroll_citation_page_numbers)):
                     with st.container(key=f'aura_payroll_{i}'):
                         image_zoom(img, mode = 'both', size = 1024, keep_resolution = True, zoom_factor = 4., increment = .3)
-                    page_link = st.session_state['payroll_file_server'].get_page_link(page=page_no)
-                    st.markdown(f'[View page in document (Page {page_no + 1})]({page_link}):material/open_in_new:')
+                    st.caption(f'Page {page_no + 1}')
                     if i < len(payroll_citation_images)-1:
                         st.divider()
             with st.expander('Davis-Bacon wage determination source(s)', expanded = True):
                 for i, (img, page_no) in enumerate(zip(db_wages_citation_images, db_wages_citation_page_numbers)):
                     with st.container(key=f'aura_db_{i}'):
                         image_zoom(img, mode = 'both', size = 1024, keep_resolution = True, zoom_factor = 4., increment = .3)
-                    page_link = st.session_state['db_wages_file_server'].get_page_link(page=page_no)
-                    st.markdown(f'[View page in document (Page {page_no+1}) :material/open_in_new:]({page_link})')
+                    st.caption(f'Page {page_no + 1}')
                     if i < len(db_wages_citation_images)-1:
                         st.divider()
         with margin:
@@ -499,13 +474,13 @@ def get_compliance_results(
             claude_compliance_matrix_prompt = claude_compliance_matrix_prompt,
             claude_single_wage_check_prompt = claude_single_wage_check_prompt,
             project_location_prompt = project_location_prompt,
-            openai_api_key = st.session_state['global_config']['openai_api_key'],
-            anthropic_api_key = st.session_state['global_config']['anthropic_api_key'],
-            unstract_api_key = st.session_state['global_config']['unstract_api_key'],
-            gcloud_api_key=st.session_state['global_config']['gcloud_api_key'],
+            openai_api_key = st.secrets['openai_api_key'],
+            anthropic_api_key = st.secrets['anthropic_api_key'],
+            unstract_api_key = st.secrets['unstract_api_key'],
+            gcloud_api_key = st.secrets['gcloud_api_key'],
             openai_model = config_dict['openai_model'],
             claude_model = config_dict['claude_model'],
-            openai_files_cache_path= st.session_state['global_config']['openai_files_cache_path']
+            openai_files_cache_path = config_dict['openai_files_cache_path']
         )
         for payroll_path in st.session_state['payroll_files_paths']
     ]
@@ -549,12 +524,9 @@ def get_compliance_results(
                 failed_indices.append(payroll_ind)
     return compliance_results, failed_indices
 
-if 'global_config' not in st.session_state:
-    with open('../GlobalUtils/config.toml', 'rb') as f:
-        st.session_state['global_config'] = tomli.load(f)
-
 if 'citation_prompt' not in st.session_state:
-    with open(st.session_state['global_config']['citation_prompt_path'], 'r', encoding='utf-8') as f:
+    config_dict = load_config()
+    with open(config_dict['citation_prompt_path'], 'r', encoding='utf-8') as f:
         st.session_state['citation_prompt'] = f.read()
 
 # <editor-fold> CSS for page styling

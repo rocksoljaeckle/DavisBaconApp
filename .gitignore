@@ -1,4 +1,5 @@
 config.toml
+nul
 
 #directories
 .streamlit/
@@ -10,3 +11,4 @@ tests/
 .idea/
 __pycache__/
 static/
+.claude/
