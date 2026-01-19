@@ -260,3 +260,4 @@ Respond with JSON only, no additional text.
 - The 'overtime_rate' field should contain the Davis-Bacon overtime rate (typically 1.5x the prevailing wage) when applicable, or null if not applicable
 - Provide thorough reasoning for each compliance determination to support audit trails and review processes
 - The paid rate is *not* the overtime rate. Only use the base hourly rate for compliance comparisons - *do not* "blend" or "weigh" the overtime and regular/base wages - use *only* the base wages.
+- If there is no work listed on the payroll, respond with success: true and an empty wage_checks array.

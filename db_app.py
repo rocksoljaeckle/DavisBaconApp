@@ -25,19 +25,7 @@ import nest_asyncio
 nest_asyncio.apply() # todo this is hacky - necessary?
 
 
-# from db_utils import (
-#     get_payroll_compliance_table,
-#     get_db_wages_citation_images,
-#     get_project_location,
-#     ComplianceTable,
-#     EmployeeWageCheck,
-#     get_citation_images_from_line_hexes
-# )
 from db_utils import ComplianceChecker, EmployeeWageCheck, ComplianceTable
-# from GlobalUtils.ocr import google_ocr_pdf_text_overlay, async_whisper_pdf_text_extraction
-# from GlobalUtils.citation import (
-#     get_unstract_citation_images
-# )
 from GlobalUtils.st_file_serving import StreamlitPDFServer
 
 class DisputeItem:
@@ -154,6 +142,19 @@ def show_help():
     with open("documents/davis-bacon-help.html", "r", encoding = 'utf-8') as f:
         st.html(f.read())
 
+def get_compliance_symbol(compliance: str):
+    """Get compliance symbol for a given compliance status."""
+    compliance = ftfy.fix_text(compliance)
+    match compliance:
+        case '✓':
+            return '✅'
+        case '✗':
+            return '❌'
+        case '?':
+            return '❓'
+        case _:
+            return compliance
+
 @st.dialog('View Citation Source', width='large', on_dismiss = destroy_file_servers)
 def show_citation_dialog(
         wage_check: EmployeeWageCheck,
@@ -167,7 +168,7 @@ def show_citation_dialog(
     """Show citation source for a given wage check."""
     st.markdown(f'### Finding source for: {wage_check.employee_name}')
     if not disputed:
-        st.markdown(f'**Title:** {wage_check.title} | **Paid Rate:** \\${wage_check.paid_rate:,.2f} | **Davis-Bacon Classification:** {wage_check.davis_bacon_classification} | **Davis-Bacon Total Rate:** \\${wage_check.davis_bacon_total_rate:,.2f}')
+        st.markdown(f'**Title:** {wage_check.title} | **Paid Rate:** \\${wage_check.paid_rate:,.2f} | **Davis-Bacon Classification:** {wage_check.davis_bacon_classification} | **Davis-Bacon Total Rate:** \\${wage_check.davis_bacon_total_rate:,.2f} | Compliance: {get_compliance_symbol(wage_check.compliance)}')
 
     # Initialize cache if it doesn't exist
     if 'citation_cache' not in st.session_state:
@@ -183,7 +184,7 @@ def show_citation_dialog(
         (db_wages_citation_images, db_wages_citation_page_numbers), (payroll_citation_images, payroll_citation_page_numbers) = st.session_state['citation_cache'][cache_key]
         st.info('Loaded source from cache')
     else:
-        with st.spinner('Generating citation (~30 seconds) ...', show_time=True):
+        with st.spinner('Generating citation (<10 seconds) ...', show_time=True):
             try:
                 if payroll_citation_line_hexes_override is None:
                     payroll_citation_line_hexes = wage_check.payroll_citation_lines
@@ -243,21 +244,9 @@ def show_citation_dialog(
     else:
         st.warning('No citations found for this employee. The source may not be clearly identifiable in the document.')
 
-def get_compliance_symbol(compliance: str):
-    """Get compliance symbol for a given compliance status."""
-    match compliance:
-        case '✓':
-            return '✅'
-        case '✗':
-            return '❌'
-        case '?':
-            return '❓'
-        case _:
-            return compliance
-
 def show_employee_additional_info(wage_check: EmployeeWageCheck, compliance_checker: ComplianceChecker, employee_index: int, payroll_index: int):
     """Show additional information for a given employee."""
-    compliance_check_symbol = get_compliance_symbol(ftfy.fix_text(wage_check.compliance))
+    compliance_check_symbol = get_compliance_symbol(wage_check.compliance)
     st.markdown(f'**"{wage_check.employee_name}**": {compliance_check_symbol}')
     l_col, r_col = st.columns([1, 9])
     with l_col.popover('Additional Info'):
@@ -320,16 +309,28 @@ def show_disputed_employee_additional_info(
             db_wages_citation_line_hexes_override = wage_determination_citation_line_hexes,
         )
 
-def get_tables_html(compliance_results: list[dict]):
+def get_tables_html(compliance_results: list[dict], failed_indices: list[int]):
     """Get HTML representation of compliance results tables."""
     tables_html = ''
-    for compliance_result in st.session_state['compliance_results']:
+    for ind, compliance_result in enumerate(compliance_results):
+        tables_html+='<br><br><hr><hr><br><br>'
+        if ind in failed_indices:
+            tables_html += f'\n<p style = "font-size: 25px; color:red">{compliance_result["file_name"]} - FAILED TO PROCESS</p>'
+            continue
         compliance_table = compliance_result['compliance_table']
-        data_rows = [wage_check.model_dump() for wage_check in compliance_table.wage_checks]
-        data_rows = [{key: value for key, value in row.items() if key not in ['compliance_reasoning', 'overtime_rate']}
-                     for row in data_rows]
-        table_df = DataFrame(data_rows)
-        tables_html += f'\n<p style = "font-size: 25px;"><br><br>{compliance_table.payroll_name}<br></p>' + table_df.to_html()
+        if len(compliance_table.wage_checks) == 0:
+            tables_html+= f'\n<p style = "font-size: 25px;">{compliance_result["file_name"]} - NO AGREED CHECKS FOUND IN PAYROLL</p>'
+        else:
+            data_rows = [wage_check.model_dump() for wage_check in compliance_table.wage_checks]
+            data_rows = [{key: value for key, value in row.items() if key not in ['compliance_reasoning', 'overtime_rate', 'payroll_citation_lines', 'wage_determination']}
+                         for row in data_rows]
+            table_df = DataFrame(data_rows)
+            tables_html += f'\n<p style = "font-size: 25px;">{compliance_table.payroll_name}<br></p>' + table_df.to_html()
+
+        if compliance_result['disputed_wage_checks']:
+            dispute_table = DisputeTable(compliance_result['disputed_wage_checks'])
+            disputed_df = dispute_table.get_df()
+            tables_html += f'\n<p style = "font-size: 20px;"><br>Disputed Wage Checks<br></p>' + disputed_df.to_html()
     return tables_html
 
 def get_aggrid_options(df: DataFrame, hidden_cols: list[str], cell_style_jscode: JsCode):
@@ -347,11 +348,12 @@ def render_compliance_results(cell_style_jscode: JsCode):
     if st.session_state['failed_indices']:
         st.error(
             f'Compliance check failed for {len(st.session_state['failed_indices'])} payroll files: \n{", ".join([st.session_state['compliance_results'][i]['file_name'] for i in st.session_state['failed_indices']])}')
+
     st.info('Compliance tables successfully loaded')
     st.markdown('### Compliance Results:')
 
     # get html for the table
-    tables_html = get_tables_html(st.session_state['compliance_results'])
+    tables_html = get_tables_html(st.session_state['compliance_results'], st.session_state['failed_indices'])
     st.download_button(
         label = 'Download payroll compliance results as HTML',
         data = tables_html,
@@ -362,8 +364,9 @@ def render_compliance_results(cell_style_jscode: JsCode):
     if st.button('Clear Results'):
         reset_st_session_state()
         st.rerun()
-
     for payroll_index, compliance_result in enumerate(st.session_state['compliance_results']):
+        if payroll_index in st.session_state['failed_indices']:
+            continue
         compliance_checker = compliance_result['compliance_checker']
 
         file_name = compliance_result['file_name']
@@ -391,7 +394,7 @@ def render_compliance_results(cell_style_jscode: JsCode):
                     st.info('No employees found in payroll.')
             else:
                 st.markdown('_Select an employee/row to view additional information (below table)_')
-                #display agreed data
+                # display agreed data
                 grid_response = AgGrid(
                     data,
                     gridOptions=grid_options,
@@ -461,9 +464,6 @@ def get_compliance_results(
 
     config_dict = load_config()
     files_save_dir = config_dict['files_save_dir']
-    # openai_api_key = config_dict['openai_api_key']
-    # anthropic_api_key = st.session_state['global_config']['anthropic_api_key']
-    # openai_files_cache_path = config_dict['openai_files_cache_path']
 
     upload_files = [*payroll_files, db_wages_file]
     file_paths = []
@@ -488,8 +488,10 @@ def get_compliance_results(
     with open(config_dict['project_location_prompt_path'], 'r', encoding='utf-8') as f:
         project_location_prompt = f.read()
 
+    compliance_semaphore = asyncio.Semaphore(config_dict['max_concurrent_compliance_checks'])
     compliance_checkers = [
         ComplianceChecker(
+            semaphore = compliance_semaphore,
             db_wages_file_path=db_wages_file_path,
             payroll_file_path = payroll_path,
             openai_compliance_matrix_prompt = openai_compliance_matrix_prompt,
@@ -509,27 +511,42 @@ def get_compliance_results(
     ]
 
     tasks_results = asyncio.run(asyncio.gather(
-        *[checker.get_payroll_compliance_table() for checker in compliance_checkers]
+        *[checker.get_payroll_compliance_table() for checker in compliance_checkers],
+        return_exceptions = True
     ))
     compliance_results = []
     failed_indices = []
     for payroll_ind in range(len(st.session_state['payroll_files_paths'])):
         file_name = payroll_files[payroll_ind].name
-        compliance_table, disputed_wage_checks, unmatched_openai, unmatched_claude = tasks_results[payroll_ind]
-        if compliance_table is not None:
-            compliance_table = fix_table_checks(compliance_table)
-        compliance_results.append(
-            {
-                'file_name': file_name,
-                'compliance_checker': compliance_checkers[payroll_ind],
-                'compliance_table': compliance_table,
-                'disputed_wage_checks': disputed_wage_checks,
-                'unmatched_openai': unmatched_openai,
-                'unmatched_claude': unmatched_claude,
-            }
-        )
-        if compliance_table is None:
+        if isinstance(tasks_results[payroll_ind], Exception):
+            print(f'Error processing "{file_name}": \n{type(tasks_results[payroll_ind])}:{tasks_results[payroll_ind]}')
+            compliance_results.append(
+                {
+                    'file_name': file_name,
+                    'compliance_checker': compliance_checkers[payroll_ind],
+                    'compliance_table': None,
+                    'disputed_wage_checks': None,
+                    'unmatched_openai': None,
+                    'unmatched_claude': None,
+                }
+            )
             failed_indices.append(payroll_ind)
+        else:
+            compliance_table, disputed_wage_checks, unmatched_openai, unmatched_claude = tasks_results[payroll_ind]
+            if compliance_table is not None:
+                compliance_table = fix_table_checks(compliance_table)
+            compliance_results.append(
+                {
+                    'file_name': file_name,
+                    'compliance_checker': compliance_checkers[payroll_ind],
+                    'compliance_table': compliance_table,
+                    'disputed_wage_checks': disputed_wage_checks,
+                    'unmatched_openai': unmatched_openai,
+                    'unmatched_claude': unmatched_claude,
+                }
+            )
+            if compliance_table is None:
+                failed_indices.append(payroll_ind)
     return compliance_results, failed_indices
 
 if 'global_config' not in st.session_state:
@@ -596,8 +613,6 @@ function(params) {
 """)
 
 
-
-
 # </editor-fold>
 
 st.set_page_config(layout = 'wide', page_title = 'Davis-Bacon Payroll Checker', page_icon = '✅')
@@ -622,6 +637,8 @@ if 'compliance_results' not in st.session_state:
         if payroll_files and db_wages_file:
             with st.spinner('Checking compliance (may take several minutes)...', show_time=True):
                 st.session_state['compliance_results'], st.session_state['failed_indices'] = get_compliance_results(payroll_files, db_wages_file)
+                # st.session_state['compliance_results'] is a list of dicts with keys:
+                # 'file_name', 'compliance_checker', 'compliance_table', 'disputed_wage_checks', 'unmatched_openai', 'unmatched_claude'
             st.rerun()
         else:
             st.error('Please upload both payroll files and the Davis-Bacon wages file.')

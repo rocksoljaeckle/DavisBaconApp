@@ -1,4 +1,5 @@
 import agents
+import anthropic
 from agents import *
 from typing import Optional
 from PIL import Image
@@ -62,30 +63,6 @@ def report_parsing_error(error_message: str):
     return error_message
 
 
-async def get_citation_images_from_line_hexes(
-        citation_line_hexes: list[str],
-        unstract_json: str,
-        pdf_path: str
-):
-    citation_lines = [int(hex, 16)-1 for hex in citation_line_hexes] # the -1 is because unstract hex lines are 1-indexed
-    line_whisper_boxes = [unstract_json['line_metadata'][line_ind] for line_ind in citation_lines]
-
-    # print('line_whisper_boxes: ', line_whisper_boxes)
-
-    line_boxes = [
-        {
-            'page': line_box[0],
-            'bbox': [0.01, (line_box[1] - line_box[2]) / line_box[3], 0.99, (line_box[1]) / line_box[3]]
-        }
-        for line_box in line_whisper_boxes
-    ]
-
-    citation_images, citation_pages = render_pdf_bboxes_to_images(
-        citation_bboxes = line_boxes,
-        pdf_source=pdf_path,
-    )
-    return citation_images, citation_pages
-
 def get_lines_page_numbers(lines: list[int], page_lengths: list[int]) -> dict[int, list[int]]:
     """Get the pages corresponding to the given line numbers.
 
@@ -106,533 +83,13 @@ def get_lines_page_numbers(lines: list[int], page_lengths: list[int]) -> dict[in
         cumulative_lines += page_length
     return pages
 
-async def get_db_wages_citation_images(
-        db_wages_file_path: str,
-        db_wages_citation_query: str,
-        citation_prompt: str,
-        openai_client: AsyncOpenAI
-):
-    page_lengths = []
-    db_wages_doc = fitz.open(db_wages_file_path)
-    db_wages_file_text = ''
-    for page in db_wages_doc:
-        page_text = page.get_text().strip()
-        db_wages_file_text += page_text + '\n'
-        page_lengths.append(page_text.count('\n')+1)
-    citation_lines = await find_best_openai_lines(
-        text=db_wages_file_text,
-        query=db_wages_citation_query,
-        citation_prompt=citation_prompt,
-        openai_client=openai_client,
-    )
-    citation_pages_dict = get_lines_page_numbers(citation_lines, page_lengths)
-
-    citation_pages = []
-    citation_images = []
-    for page, lines in citation_pages_dict.items():
-        citation_pages.append(page)
-        citation_images.append(
-            render_line_highlights(
-                text = db_wages_doc[page].get_text().strip(),
-                highlight_lines = lines
-            )
-        )
-    db_wages_doc.close()
-
-    return citation_images, citation_pages
-
-async def openai_payroll_compliance_table(
-        openai_client: AsyncOpenAI,
-        openai_model: str,
-        openai_compliance_matrix_prompt: str,
-        db_wages_file_path: str,
-        payroll_file_path: str,
-        openai_files_cache_path: str,
-        payroll_ocr_str: str|None = None,
-        project_location_str: str|None = None
-):
-    # openai extraction
-    payroll_file_id = await get_or_upload_async(
-        file_path=payroll_file_path,
-        client=openai_client,
-        cache_path=openai_files_cache_path,
-        purpose='user_data'
-    )
-    db_wages_doc = fitz.open(db_wages_file_path)
-    db_wages_file_text = ''
-    line_no = 0
-    for page in db_wages_doc:
-        page_text = page.get_text(sort=True).strip()
-        for line in page_text.splitlines(keepends=True):
-            line_no += 1
-            db_wages_file_text += f'{hex(line_no)}:{line}'
-    openai_compliance_agent = Agent(
-        name="Payroll Compliance Agent",
-        instructions=openai_compliance_matrix_prompt,
-        tools=[report_compliance_table, report_parsing_error],
-        model=openai_model,
-        tool_use_behavior='stop_on_first_tool'
-    )
-    openai_compliance_input = [
-        {
-            'role': 'user',
-            'content': [
-                {
-                    'type': 'input_text',
-                    'text': 'Here is the Davis-Bacon wage determination file, with hex line numbers:\n' + db_wages_file_text
-                },
-                {
-                    'type': 'input_file',
-                    'file_id': payroll_file_id
-                }
-            ]
-        }
-    ]
-    if payroll_ocr_str is not None:
-        openai_compliance_input[0]['content'].append({
-            'type': 'input_text',
-            'text': 'The following was extracted from the payroll file via OCR. Use it for citations and to cross-reference with the payroll file:\n' + payroll_ocr_str
-        })
-    if project_location_str is not None:
-        openai_compliance_input[0]['content'].append({
-            'type': 'input_text',
-            'text': 'The location of the project has been determined: \n' + project_location_str
-        })
-    with trace('Payroll Compliance Workflow'):
-        openai_compliance_result = await Runner.run(openai_compliance_agent, input=openai_compliance_input)
-    for i, item in enumerate(openai_compliance_result.new_items):
-        if (
-                i > 0 and
-                isinstance(item, agents.items.ToolCallOutputItem) and
-                isinstance(openai_compliance_result.new_items[i - 1], agents.items.ToolCallItem) and
-                openai_compliance_result.new_items[i - 1].raw_item.name == 'report_compliance_table'
-        ):
-            openai_compliance_table = item.output
-            break
-    else:
-        openai_compliance_table = None
-    return openai_compliance_table
-
-async def claude_payroll_compliance_table(
-        anthropic_client: AsyncAnthropic,
-        claude_model: str,
-        claude_compliance_matrix_prompt: str,
-        db_wages_file_path: str,
-        payroll_file_path: str,
-        payroll_ocr_str: str|None = None,
-        project_location_str: str|None = None
-):
-    with open(payroll_file_path, "rb") as f:
-        payroll_bytes = f.read()
-    payroll_base64_string = base64.b64encode(payroll_bytes).decode('utf-8')
-
-    db_wages_doc = fitz.open(db_wages_file_path)
-    db_wages_file_text = ''
-    line_no = 0
-    for page in db_wages_doc:
-        page_text = page.get_text(sort=True).strip()
-        for line in page_text.splitlines(keepends=True):
-            line_no += 1
-            db_wages_file_text += f'{hex(line_no)}:{line}'
-
-    claude_compliance_input = [
-        {
-            'role': 'user',
-            'content': [
-                {
-                    'type': 'text',
-                    'text': claude_compliance_matrix_prompt  # todo -special claude prompt
-                },
-                {
-                    'type': 'text',
-                    'text': 'Here is the Davis-Bacon wage determination file, with hex line numbers:\n' + db_wages_file_text
-                },
-                {
-                    'type': 'document',
-                    'source': {
-                        'type': 'base64',
-                        'media_type': 'application/pdf',
-                        'data': payroll_base64_string
-                    }
-                }
-            ]
-        },
-        {
-            'role': 'assistant',
-            'content': '{"success":'
-        }
-    ]
-    if payroll_ocr_str is not None:
-        claude_compliance_input[0]['content'].append({
-            'type': 'text',
-            'text': 'The following was extracted from the payroll file via OCR. Use it for citations and to cross-reference with the payroll file:\n' + payroll_ocr_str
-        })
-    if project_location_str is not None:
-        claude_compliance_input[0]['content'].append({
-            'type': 'text',
-            'text': 'The project is located in the following county/location: ' + project_location_str
-        })
-    claude_compliance_response = await anthropic_client.messages.create(
-        model=claude_model,
-        messages=claude_compliance_input,
-        max_tokens=10_000
-    )
-
-    claude_compliance_result = json.loads('{"success":' + claude_compliance_response.content[0].text)
-    if claude_compliance_result.get('success'):
-        if 'wage_checks' not in claude_compliance_result:
-            raise ValueError("Claude response indicates success but no 'wage_checks' found in response.")
-        claude_wage_checks = [
-            EmployeeWageCheck(
-                employee_name=wage_check['employee_name'],
-                title=wage_check['title'],
-                davis_bacon_classification=wage_check['davis_bacon_classification'],
-                davis_bacon_base_rate=wage_check['davis_bacon_base_rate'],
-                davis_bacon_fringe_rate=wage_check['davis_bacon_fringe_rate'],
-                davis_bacon_total_rate=wage_check['davis_bacon_total_rate'],
-                overtime_rate=wage_check.get('overtime_rate'),
-                paid_rate=wage_check['paid_rate'],
-                compliance_reasoning=wage_check['compliance_reasoning'],
-                compliance=wage_check['compliance'],
-                citation_lines=wage_check['citation_lines']
-            )
-            for wage_check in claude_compliance_result['wage_checks']
-        ]
-        claude_compliance_table = ComplianceTable(
-            payroll_name=claude_compliance_result.get('payroll_name', ''),
-            wage_checks=claude_wage_checks
-        )
-    else:
-        print('Claude failed to extract compliance table:', json.dumps(claude_compliance_result,indent=2)) # todo remove
-        claude_compliance_table = None
-    return claude_compliance_table
-
-async def openai_single_wage_check(
-        openai_wc: EmployeeWageCheck,
-        openai_client: AsyncOpenAI,
-        openai_model: str,
-        openai_single_wage_check_prompt: str,
-        db_wages_file_path: str,
-        payroll_file_path: str,
-        openai_files_cache_path: str,
-        payroll_ocr_str: str|None = None,
-        project_location_str: str|None = None
-):
-    # openai extraction
-    upload_coroutines = [
-        get_or_upload_async(
-            file_path=path,
-            client=openai_client,
-            cache_path=openai_files_cache_path,
-            purpose='user_data'
-        )
-        for path in [db_wages_file_path, payroll_file_path]
-    ]
-    db_wages_file_id, payroll_file_id = await asyncio.gather(*upload_coroutines)
-    openai_check_agent = Agent(
-        name="Payroll Check Agent",
-        instructions=openai_single_wage_check_prompt,
-        tools=[report_wage_check, report_parsing_error],
-        model=openai_model,
-        tool_use_behavior='stop_on_first_tool'
-    )
-    openai_check_input = [
-        {
-            'role': 'user',
-            'content': [
-                {
-                    'type': 'input_file',
-                    'file_id': db_wages_file_id
-                },
-                {
-                    'type': 'input_file',
-                    'file_id': payroll_file_id
-                }
-            ]
-        }
-    ]
-    if payroll_ocr_str is not None:
-        openai_check_input[0]['content'].append({
-            'type': 'input_text',
-            'text': 'The following text was extracted from the payroll file via OCR. Use it to cross-reference with the payroll file:\n' + payroll_ocr_str
-        })
-    if project_location_str is not None:
-        openai_check_input[0]['content'].append({
-            'type': 'input_text',
-            'text': 'The project is located in the following county/location: ' + project_location_str
-        })
-    openai_check_input[0]['content'].append({
-        'type': 'input_text',
-        'text': f'Please extract the payroll information for the following employee: {openai_wc.employee_name}'
-    })
-    with trace(f'Payroll Checking Workflow for {openai_wc.employee_name}'):
-        openai_check_result = await Runner.run(openai_check_agent, input=openai_check_input)
-    for i, item in enumerate(openai_check_result.new_items):
-        if (
-                i > 0 and
-                isinstance(item, agents.items.ToolCallOutputItem) and
-                isinstance(openai_check_result.new_items[i - 1], agents.items.ToolCallItem) and
-                openai_check_result.new_items[i - 1].raw_item.name == 'report_wage_check'
-        ):
-            openai_wage_check = item.output
-            break
-    else:
-        openai_wage_check = None
-    return openai_wage_check
-
-async def claude_single_wage_check(
-        claude_wc: EmployeeWageCheck,
-        anthropic_client: AsyncAnthropic,
-        claude_model: str,
-        claude_single_wage_check_prompt: str,
-        db_wages_file_path: str,
-        payroll_file_path: str,
-        payroll_ocr_str: str|None = None,
-        project_location_str: str|None = None
-):
-    with open(payroll_file_path, "rb") as f:
-        payroll_bytes = f.read()
-    payroll_base64_string = base64.b64encode(payroll_bytes).decode('utf-8')
-    with open(db_wages_file_path, "rb") as f:
-        db_wages_bytes = f.read()
-    db_wages_base64_string = base64.b64encode(db_wages_bytes).decode('utf-8')
-    claude_check_input = [
-        {
-            'role': 'user',
-            'content': [
-                {
-                    'type': 'text',
-                    'text': claude_single_wage_check_prompt
-                },
-                {
-                    'type': 'document',
-                    'source': {
-                        'type': 'base64',
-                        'media_type': 'application/pdf',
-                        'data': db_wages_base64_string
-                    }
-                },
-                {
-                    'type': 'document',
-                    'source': {
-                        'type': 'base64',
-                        'media_type': 'application/pdf',
-                        'data': payroll_base64_string
-                    }
-                }
-            ]
-        },
-        {
-            'role': 'assistant',
-            'content': '{"success":'
-        }
-    ]
-    if payroll_ocr_str is not None:
-        claude_check_input[0]['content'].append({
-            'type': 'text',
-            'text': 'The following text was extracted from the payroll file via OCR. Use it to cross-reference with the payroll file:\n' + payroll_ocr_str
-        })
-    if project_location_str is not None:
-        claude_check_input[0]['content'].append({
-            'type': 'text',
-            'text': 'The project is located in the following county/location: ' + project_location_str
-        })
-    claude_check_input[0]['content'].append({
-        'type': 'text',
-        'text': f'Please extract the payroll information for the following employee: {claude_wc.employee_name}'
-    })
-
-    claude_check_response = await anthropic_client.messages.create(
-        model=claude_model,
-        messages=claude_check_input,
-        max_tokens=10_000
-    )
-
-    new_wage_check = json.loads('{"success":' + claude_check_response.content[0].text)
-    if new_wage_check.get('success'):
-        claude_wage_check = EmployeeWageCheck(
-            employee_name=new_wage_check['employee_name'],
-            title=new_wage_check['title'],
-            davis_bacon_classification=new_wage_check['davis_bacon_classification'],
-            davis_bacon_base_rate=new_wage_check['davis_bacon_base_rate'],
-            davis_bacon_fringe_rate=new_wage_check['davis_bacon_fringe_rate'],
-            davis_bacon_total_rate=new_wage_check['davis_bacon_total_rate'],
-            overtime_rate=new_wage_check.get('overtime_rate'),
-            paid_rate=new_wage_check['paid_rate'],
-            compliance_reasoning=new_wage_check['compliance_reasoning'],
-            compliance=new_wage_check['compliance'],
-            payroll_citation_lines=new_wage_check['citation_lines'],
-            wage_determination_citation_lines=new_wage_check['wage_determination_citation_lines']
-        )
-    else:
-        claude_wage_check = None # ehhh not sure if i love this
-    return claude_wage_check
-
-async def resolve_disputed_check(
-        openai_wc: EmployeeWageCheck,
-        claude_wc: EmployeeWageCheck,
-        openai_client: AsyncOpenAI,
-        openai_model: str,
-        openai_single_wage_check_prompt: str,
-        anthropic_client: AsyncAnthropic,
-        claude_model: str,
-        claude_single_wage_check_prompt: str,
-        db_wages_file_path: str,
-        payroll_file_path: str,
-        openai_files_cache_path: str,
-        payroll_ocr_str: str|None = None,
-        project_location_str: str|None = None
-) -> Optional[EmployeeWageCheck]:
-    openai_check, claude_check = await asyncio.gather(
-        openai_single_wage_check(
-            openai_wc = openai_wc,
-            openai_client = openai_client,
-            openai_model = openai_model,
-            openai_single_wage_check_prompt = openai_single_wage_check_prompt,
-            db_wages_file_path = db_wages_file_path,
-            openai_files_cache_path=openai_files_cache_path,
-            payroll_file_path = payroll_file_path,
-            project_location_str = project_location_str
-        ),
-        claude_single_wage_check(
-            claude_wc = claude_wc,
-            anthropic_client = anthropic_client,
-            claude_model = claude_model,
-            claude_single_wage_check_prompt = claude_single_wage_check_prompt,
-            db_wages_file_path = db_wages_file_path,
-            payroll_file_path = payroll_file_path,
-            payroll_ocr_str = payroll_ocr_str,
-            project_location_str = project_location_str
-        )
-    )
-    if openai_check is None and claude_check is None:
-        return None
-    elif openai_check is None:
-        return claude_check
-    elif claude_check is None:
-        return openai_check
-    elif abs(openai_wc.davis_bacon_total_rate - claude_wc.davis_bacon_total_rate) > 0.1:
-        return None
-    elif abs(openai_wc.paid_rate - claude_wc.paid_rate) > 0.1:
-        return None
-    else:  # why do we throw away everything else? because its harder to match those strings. there may be idiosyncrasies in naming conventions
-        return claude_wc  # prefer claude
 
 
-async def get_payroll_compliance_table(
-        openai_client: AsyncOpenAI,
-        openai_model: str,
-        openai_compliance_matrix_prompt: str,
-        openai_single_wage_check_prompt: str,
-        anthropic_client: AsyncAnthropic,
-        claude_model: str,
-        claude_compliance_matrix_prompt: str,
-        claude_single_wage_check_prompt: str,
-        db_wages_file_path: str,
-        payroll_file_path: str,
-        openai_files_cache_path: str,
-        payroll_ocr_str: str|None = None,
-        project_location_str: str|None = None,
-        name_match_threshold: float = 80.
-):
-    """Get the payroll compliance table directly from the payroll and DB wages files (no OCR)."""
-    openai_compliance_task = openai_payroll_compliance_table(
-        openai_client = openai_client,
-        openai_model = openai_model,
-        openai_compliance_matrix_prompt = openai_compliance_matrix_prompt,
-        db_wages_file_path = db_wages_file_path,
-        payroll_file_path = payroll_file_path,
-        openai_files_cache_path = openai_files_cache_path,
-        payroll_ocr_str = payroll_ocr_str,
-        project_location_str = project_location_str
-    )
-    claude_compliance_task = claude_payroll_compliance_table(
-        anthropic_client = anthropic_client,
-        claude_model = claude_model,
-        claude_compliance_matrix_prompt = claude_compliance_matrix_prompt,
-        db_wages_file_path = db_wages_file_path,
-        payroll_file_path = payroll_file_path,
-        payroll_ocr_str = payroll_ocr_str,
-        project_location_str = project_location_str
-    )
-    print('Getting compliance tables from OpenAI and Claude...')
-    openai_compliance_table, claude_compliance_table = await asyncio.gather(
-        openai_compliance_task,
-        claude_compliance_task
-    )
-    print('Done.')
-    if openai_compliance_table is None and claude_compliance_table is None:
-        return None, None, None, None
-    elif openai_compliance_table is None:
-        return claude_compliance_table, None, None, None
-    elif claude_compliance_table is None:
-        return openai_compliance_table, None, None, None
-    # if we reach here, both are non-null - concordance time
-
-    # pair up wage checks by employee name similarity
-    wage_check_comparisons = []
-    for openai_ind, openai_wc in enumerate(openai_compliance_table.wage_checks):
-        for claude_ind, claude_wc in enumerate(claude_compliance_table.wage_checks):
-            score = fuzz.ratio(openai_wc.employee_name, claude_wc.employee_name, processor=rapidfuzz_default_process)
-            wage_check_comparisons.append((score, openai_ind, claude_ind))
-    wage_check_comparisons.sort(reverse=True, key=lambda x: x[0])
-    unmatched_openai_inds = set(range(len(openai_compliance_table.wage_checks)))
-    unmatched_claude_inds = set(range(len(claude_compliance_table.wage_checks)))
-    matched_wage_checks = []
-    disputed_wage_checks = []
-    for score, openai_ind, claude_ind in wage_check_comparisons:
-        if score < name_match_threshold:
-            break
-        if (openai_ind not in unmatched_openai_inds) or (claude_ind not in unmatched_claude_inds):
-            continue
-        unmatched_openai_inds.remove(openai_ind)
-        unmatched_claude_inds.remove(claude_ind)
-        openai_wc = openai_compliance_table.wage_checks[openai_ind]
-        claude_wc = claude_compliance_table.wage_checks[claude_ind]
-        if abs(openai_wc.davis_bacon_total_rate - claude_wc.davis_bacon_total_rate)>0.1:
-            disputed_wage_checks.append((openai_wc, claude_wc))
-        elif abs(openai_wc.paid_rate - claude_wc.paid_rate)>0.1:
-            disputed_wage_checks.append((openai_wc, claude_wc))
-        else: # why do we throw away everything else? because its harder to match those strings. there may be idiosyncrasies in naming conventions
-            matched_wage_checks.append(claude_wc) # prefer claude
-    unmatched_openai = [openai_compliance_table.wage_checks[ind] for ind in unmatched_openai_inds]
-    unmatched_claude = [claude_compliance_table.wage_checks[ind] for ind in unmatched_claude_inds]
 
 
-    print('Resolving disputed wage checks...')
-    #resolved matched but disputed wage checks
-    disputed_resolution_tasks = [
-        resolve_disputed_check(
-            openai_wc = openai_wc,
-            claude_wc = claude_wc,
-            openai_client = openai_client,
-            openai_model = openai_model,
-            openai_single_wage_check_prompt = openai_single_wage_check_prompt,
-            anthropic_client = anthropic_client,
-            claude_model = claude_model,
-            claude_single_wage_check_prompt = claude_single_wage_check_prompt,
-            db_wages_file_path = db_wages_file_path,
-            payroll_file_path = payroll_file_path,
-            openai_files_cache_path = openai_files_cache_path,
-            payroll_ocr_str = payroll_ocr_str,
-            project_location_str = project_location_str
-        )
-        for openai_wc, claude_wc in disputed_wage_checks
-    ]
-    disputed_resolutions = await asyncio.gather(*disputed_resolution_tasks)
-    agreed_wage_checks = [wage_check for wage_check in disputed_resolutions if wage_check is not None]
-    disputed_wage_checks = [disputed_wage_checks[disputed_ind] for disputed_ind in range(len(disputed_wage_checks)) if disputed_resolutions[disputed_ind] is None]
-    matched_wage_checks.extend(agreed_wage_checks)
-    print('Done.')
-    return (
-        ComplianceTable(
-            payroll_name = openai_compliance_table.payroll_name,
-            wage_checks = matched_wage_checks
-        ),
-        disputed_wage_checks,
-        unmatched_openai,
-        unmatched_claude
-    )
+
+
+
 
 def create_search_location_tool(google_api_key: str):
     google_maps_client = googlemaps.Client(key=google_api_key)
@@ -643,64 +100,10 @@ def create_search_location_tool(google_api_key: str):
         return json.dumps(geocode_result)
     return search_location
 
-async def get_project_location(
-        project_location_prompt: str,
-        payroll_file_path: str,
-        db_wages_file_path: str,
-        gcloud_api_key: str,
-        openai_files_cache_path: str,
-        openai_client: AsyncOpenAI,
-        openai_model: str = 'gpt-5',
-        payroll_ocr_str: str|None = None
-):
-    search_location = create_search_location_tool(gcloud_api_key)
-    location_agent = Agent(
-        name="Project Location Extraction Agent",
-        instructions=project_location_prompt,
-        tools = [search_location],
-        model = openai_model
-    )
-    upload_coroutines = [
-        get_or_upload_async(
-            file_path=path,
-            client=openai_client,
-            cache_path=openai_files_cache_path,
-            purpose='user_data'
-        )
-        for path in [payroll_file_path, db_wages_file_path]
-    ]
-    payroll_file_id, db_wages_file_id = await asyncio.gather(*upload_coroutines)
-    location_input = [
-        {
-            'role': 'user',
-            'content': [
-                {
-                    'type': 'input_file',
-                    'file_id': payroll_file_id
-                },
-                {
-                    'type': 'input_file',
-                    'file_id': db_wages_file_id
-                }
-            ]
-        }
-    ]
-
-    if payroll_ocr_str is not None:
-        location_input[0]['content'].append({
-            'type': 'input_text',
-            'text': 'The following text was extracted from the payroll file via OCR. Use it to cross-reference with the payroll file:\n' + payroll_ocr_str
-        })
-    with trace('Project Location Extraction Workflow'):
-        location_result = await Runner.run(
-            location_agent,
-            input=location_input
-        )
-    return location_result.final_output
-
 class ComplianceChecker:
     def __init__(
             self,
+            semaphore: asyncio.Semaphore,
             db_wages_file_path: str,
             payroll_file_path: str,
             openai_compliance_matrix_prompt: str, openai_single_wage_check_prompt: str,
@@ -708,11 +111,17 @@ class ComplianceChecker:
             project_location_prompt: str,
             openai_api_key: str, anthropic_api_key: str, unstract_api_key: str, gcloud_api_key: str,
             openai_model: str, claude_model: str,
-            openai_files_cache_path: str
+            openai_files_cache_path: str,
+            claude_wait_time:int = 30,
+            max_claude_waits: int = 4
     ):
         self.openai_client = AsyncOpenAI(api_key=openai_api_key)
         set_default_openai_key(openai_api_key)
         self.anthropic_client = AsyncAnthropic(api_key=anthropic_api_key)
+        self.claude_wait_time = claude_wait_time
+        self.max_claude_waits = max_claude_waits
+
+        self._sem = semaphore
 
         self.db_wages_file_path = db_wages_file_path
         self.payroll_file_path = payroll_file_path
@@ -738,12 +147,13 @@ class ComplianceChecker:
 
 
     async def ocr_payroll(self):
-        self.payroll_unstract_json = await async_whisper_pdf_text_extraction(
-            unstract_api_key = self.unstract_api_key,
-            input_pdf_path = self.payroll_file_path,
-            return_json = True,
-            add_line_nos = True,
-        )
+        async with self._sem:
+            self.payroll_unstract_json = await async_whisper_pdf_text_extraction(
+                unstract_api_key = self.unstract_api_key,
+                input_pdf_path = self.payroll_file_path,
+                return_json = True,
+                add_line_nos = True,
+            )
         self.payroll_ocr_str = self.payroll_unstract_json['result_text']
         return self.payroll_unstract_json
 
@@ -764,7 +174,8 @@ class ComplianceChecker:
             )
             for path in [self.payroll_file_path, self.db_wages_file_path]
         ]
-        payroll_file_id, db_wages_file_id = await asyncio.gather(*upload_coroutines)
+        async with self._sem:
+            payroll_file_id, db_wages_file_id = await asyncio.gather(*upload_coroutines)
         location_input = [
             {
                 'role': 'user',
@@ -786,12 +197,13 @@ class ComplianceChecker:
                 'type': 'input_text',
                 'text': 'The following text was extracted from the payroll file via OCR. Use it to cross-reference with the payroll file:\n' + self.payroll_ocr_str
             })
-        with trace('Project Location Extraction Workflow'):
-            location_result = await Runner.run(
-                location_agent,
-                input=location_input
-            )
-        self.project_location_str = location_result.final_output
+        async with self._sem:
+            with trace('Project Location Extraction Workflow'):
+                location_result = await Runner.run(
+                    location_agent,
+                    input=location_input
+                )
+            self.project_location_str = location_result.final_output
         return self.project_location_str
 
     def get_db_wages_file_text(self, include_line_nos: bool = True, return_page_lengths: bool = False):
@@ -859,13 +271,13 @@ class ComplianceChecker:
 
     async def openai_payroll_compliance_table(self):
         # openai extraction
-
-        payroll_file_id = await get_or_upload_async(
-            file_path=self.payroll_file_path,
-            client=self.openai_client,
-            cache_path=self.openai_files_cache_path,
-            purpose='user_data'
-        )
+        async with self._sem:
+            payroll_file_id = await get_or_upload_async(
+                file_path=self.payroll_file_path,
+                client=self.openai_client,
+                cache_path=self.openai_files_cache_path,
+                purpose='user_data'
+            )
         db_wages_file_text = self.get_db_wages_file_text(include_line_nos=True)
         openai_compliance_agent = Agent(
             name="Payroll Compliance Agent",
@@ -899,8 +311,9 @@ class ComplianceChecker:
                 'type': 'input_text',
                 'text': 'The location of the project has been determined: \n' + self.project_location_str
             })
-        with trace('Payroll Compliance Workflow'):
-            openai_compliance_result = await Runner.run(openai_compliance_agent, input=openai_compliance_input)
+        async with self._sem:
+            with trace('Payroll Compliance Workflow'):
+                openai_compliance_result = await Runner.run(openai_compliance_agent, input=openai_compliance_input)
         for i, item in enumerate(openai_compliance_result.new_items):
             if (
                     i > 0 and
@@ -960,11 +373,22 @@ class ComplianceChecker:
                 'type': 'text',
                 'text': 'The project is located in the following county/location: ' + self.project_location_str
             })
-        claude_compliance_response = await self.anthropic_client.messages.create(
-            model=self.claude_model,
-            messages=claude_compliance_input,
-            max_tokens=10_000
-        )
+        async with self._sem:
+            for wait in range(self.max_claude_waits):
+                try:
+                    claude_compliance_response = await self.anthropic_client.messages.create(
+                        model=self.claude_model,
+                        messages=claude_compliance_input,
+                        max_tokens=10_000
+                    )
+                    break
+                except anthropic.RateLimitError as e:
+                    if wait+1 == self.max_claude_waits:
+                        raise e
+                    else:
+                        await asyncio.sleep(self.claude_wait_time)
+
+
 
         claude_compliance_result = json.loads('{"success":' + claude_compliance_response.content[0].text)
         try:
@@ -1045,8 +469,9 @@ class ComplianceChecker:
             'type': 'input_text',
             'text': f'Please extract the payroll information for the following employee: {employee_wage_check.employee_name}'
         })
-        with trace(f'Payroll Checking Workflow for {employee_wage_check.employee_name}'):
-            openai_check_result = await Runner.run(openai_check_agent, input=openai_check_input)
+        async with self._sem:
+            with trace(f'Payroll Checking Workflow for {employee_wage_check.employee_name}'):
+                openai_check_result = await Runner.run(openai_check_agent, input=openai_check_input)
         for i, item in enumerate(openai_check_result.new_items):
             if (
                     i > 0 and
@@ -1114,11 +539,20 @@ class ComplianceChecker:
             'text': f'Please extract the payroll information for the following employee: {employee_wage_check.employee_name}'
         })
 
-        claude_check_response = await self.anthropic_client.messages.create(
-            model=self.claude_model,
-            messages=claude_check_input,
-            max_tokens=10_000
-        )
+        async with self._sem:
+            for wait in range(self.max_claude_waits):
+                try:
+                    claude_check_response = await self.anthropic_client.messages.create(
+                        model=self.claude_model,
+                        messages=claude_check_input,
+                        max_tokens=10_000
+                    )
+                    break
+                except anthropic.RateLimitError as e:
+                    if wait+1 == self.max_claude_waits:
+                        raise e
+                    else:
+                        await asyncio.sleep(self.claude_wait_time)
 
         new_wage_check = json.loads('{"success":' + claude_check_response.content[0].text)
         try:
