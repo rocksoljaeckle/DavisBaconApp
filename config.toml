@@ -1,0 +1,14 @@
+openai_model = "gpt-5.2"
+claude_model = "claude-opus-4-5-20251101"
+
+openai_files_cache_path = '.inline_file_cache.json'
+citation_prompt_path = 'GlobalUtils\prompts\citation_prompt.md'
+files_save_dir = 'uploaded_files'
+
+openai_compliance_matrix_prompt_path = 'prompts\openai_compliance_matrix_prompt.md'
+openai_single_wage_check_prompt_path = 'prompts\openai_single_wage_check_prompt.md'
+claude_compliance_matrix_prompt_path = 'prompts\claude_compliance_matrix_prompt.md'
+claude_single_wage_check_prompt_path = 'prompts\claude_single_wage_check_prompt.md'
+project_location_prompt_path = 'prompts\project_location_prompt.md'
+
+max_concurrent_compliance_checks = 16
