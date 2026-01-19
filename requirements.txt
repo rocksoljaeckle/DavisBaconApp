@@ -117,7 +117,7 @@ python-dotenv==1.1.1
 python-json-logger==4.0.0
 python-multipart==0.0.20
 pytz==2025.2
-pywin32==311
+pywin32==311; platform_system == "Windows"
 pywinpty==3.0.2
 PyYAML==6.0.3
 pyzmq==27.1.0
