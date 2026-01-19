@@ -525,17 +525,7 @@ def get_compliance_results(
     return compliance_results, failed_indices
 
 if 'citation_prompt' not in st.session_state:
-
-
-    # TODO REMOVE
     config_dict = load_config()
-    for root, dirs, files in os.walk('GlobalUtils'):
-        for file in files:
-            full_path = os.path.join(root, file)
-            print(full_path)
-
-
-
     with open(config_dict['citation_prompt_path'], 'r', encoding='utf-8') as f:
         st.session_state['citation_prompt'] = f.read()
 
