@@ -1,10 +1,10 @@
-
+uploaded_files/*
+!uploaded_files/dummy.txt
 nul
 
 #directories
 .streamlit/
 .venv/
-uploaded_files/
 documents/
 ssl/
 tests/
