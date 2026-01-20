@@ -22,6 +22,13 @@ nest_asyncio.apply() # todo this is hacky - necessary?
 
 from db_utils import ComplianceChecker, EmployeeWageCheck, ComplianceTable
 
+
+#login
+if not st.user.is_logged_in:
+    if st.button('Log in with Microsoft'):
+        st.login('microsoft')
+    st.stop()
+
 class DisputeItem:
     """Class to hold information about a single disputed attribute of a single employee"""
     def __init__(self, openai_item, claude_item):
