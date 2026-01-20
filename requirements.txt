@@ -1,10 +1,10 @@
 anthropic
-authlib
-ftfy
+authlib==1.5.2
+ftfy==6.3.1
 fuzzysearch
-google-cloud-vision
+google-cloud-vision==3.11.0
 googlemaps
-httpx
+httpx==0.28.1
 nest-asyncio
 openai
 openai-agents
