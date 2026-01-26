@@ -10,5 +10,6 @@ openai_single_wage_check_prompt_path = 'prompts/openai_single_wage_check_prompt.
 claude_compliance_matrix_prompt_path = 'prompts/claude_compliance_matrix_prompt.md'
 claude_single_wage_check_prompt_path = 'prompts/claude_single_wage_check_prompt.md'
 project_location_prompt_path = 'prompts/project_location_prompt.md'
+relevant_locations_prompt_path = 'prompts/relevant_locations_prompt.md'
 
 max_concurrent_compliance_checks = 16

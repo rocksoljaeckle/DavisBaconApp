@@ -18,6 +18,7 @@ import tomli
 import base64
 import googlemaps
 import fitz
+import geopy.distance
 
 from GlobalUtils.ocr import async_whisper_pdf_text_extraction
 from GlobalUtils.openai_uploading import get_or_upload_async
@@ -26,6 +27,7 @@ from GlobalUtils.citation import (
     render_line_highlights,
     render_pdf_bboxes_to_images
 )
+from pydeck_rendering import make_project_arc_deck
 
 
 class EmployeeWageCheck(BaseModel):
@@ -62,6 +64,36 @@ def report_parsing_error(error_message: str):
     """Report an error in parsing the compliance table."""
     return error_message
 
+class EmployeeClassification(BaseModel):
+    employee_name: str
+    payroll_title: str
+    matched_wage_determination_classification: str
+
+class EmployeeClassificationsList(BaseModel):
+    classifications: list[EmployeeClassification]
+
+@function_tool
+def report_employee_classifications(classifications: EmployeeClassificationsList):
+    """Report the employee classifications found."""
+    return 'Successfully reported employee classifications.'
+
+class Location(BaseModel):
+    name: str
+    latitude: str
+    longitude: str
+
+class LocationsList(BaseModel):
+    locations: list[Location]
+
+@function_tool
+def report_project_location(location: Location):
+    """Report the project location."""
+    return 'Successfully reported project location.'
+
+@function_tool
+def report_locations(locations: LocationsList):
+    """Report the project location."""
+    return 'Successfully reported locations list.'
 
 def get_lines_page_numbers(lines: list[int], page_lengths: list[int]) -> dict[int, list[int]]:
     """Get the pages corresponding to the given line numbers.
@@ -84,13 +116,6 @@ def get_lines_page_numbers(lines: list[int], page_lengths: list[int]) -> dict[in
     return pages
 
 
-
-
-
-
-
-
-
 def create_search_location_tool(google_api_key: str):
     google_maps_client = googlemaps.Client(key=google_api_key)
     @function_tool
@@ -100,6 +125,7 @@ def create_search_location_tool(google_api_key: str):
         return json.dumps(geocode_result)
     return search_location
 
+
 class ComplianceChecker:
     def __init__(
             self,
@@ -108,7 +134,7 @@ class ComplianceChecker:
             payroll_file_path: str,
             openai_compliance_matrix_prompt: str, openai_single_wage_check_prompt: str,
             claude_compliance_matrix_prompt: str, claude_single_wage_check_prompt: str,
-            project_location_prompt: str,
+            relevant_locations_prompt: str,
             openai_api_key: str, anthropic_api_key: str, unstract_api_key: str, gcloud_api_key: str,
             openai_model: str, claude_model: str,
             openai_files_cache_path: str,
@@ -130,7 +156,7 @@ class ComplianceChecker:
         self.openai_single_wage_check_prompt = openai_single_wage_check_prompt
         self.claude_compliance_matrix_prompt = claude_compliance_matrix_prompt
         self.claude_single_wage_check_prompt = claude_single_wage_check_prompt
-        self.project_location_prompt = project_location_prompt
+        self.relevant_locations_prompt = relevant_locations_prompt
 
         self.gcloud_api_key = gcloud_api_key
         self.unstract_api_key = unstract_api_key
@@ -142,9 +168,12 @@ class ComplianceChecker:
 
         self.payroll_unstract_json = None
         self.payroll_ocr_str = None
-        self.project_location_str = None
         self.openai_compliance_table = None
 
+        self.project_location_str = None
+        self.project_location = None
+        self.relevant_locations = None
+        self.relevant_locations_str = None
 
     async def ocr_payroll(self):
         async with self._sem:
@@ -157,14 +186,7 @@ class ComplianceChecker:
         self.payroll_ocr_str = self.payroll_unstract_json['result_text']
         return self.payroll_unstract_json
 
-    async def get_project_location(self):
-        search_location = create_search_location_tool(self.gcloud_api_key)
-        location_agent = Agent(
-            name="Project Location Extraction Agent",
-            instructions=self.project_location_prompt,
-            tools=[search_location],
-            model=self.openai_model
-        )
+    async def get_relevant_locations(self):
         upload_coroutines = [
             get_or_upload_async(
                 file_path=path,
@@ -176,6 +198,15 @@ class ComplianceChecker:
         ]
         async with self._sem:
             payroll_file_id, db_wages_file_id = await asyncio.gather(*upload_coroutines)
+
+        search_location = create_search_location_tool(self.gcloud_api_key)
+        location_agent = Agent(
+            name="Relevant Locations Extraction Agent",
+            instructions=self.relevant_locations_prompt,
+            tools=[search_location, report_project_location, report_employee_classifications, report_locations],
+            model=self.openai_model,
+            tool_use_behavior={'stop_at_tool_names': [report_locations.name]}
+        )
         location_input = [
             {
                 'role': 'user',
@@ -197,14 +228,128 @@ class ComplianceChecker:
                 'type': 'input_text',
                 'text': 'The following text was extracted from the payroll file via OCR. Use it to cross-reference with the payroll file:\n' + self.payroll_ocr_str
             })
+
         async with self._sem:
-            with trace('Project Location Extraction Workflow'):
+            with trace('Project Relevant Locations Extraction Workflow'):
                 location_result = await Runner.run(
                     location_agent,
                     input=location_input
                 )
-            self.project_location_str = location_result.final_output
-        return self.project_location_str
+
+        for item in location_result.new_items:
+            if (isinstance(item, agents.items.ToolCallItem)):
+                if item.raw_item.name == report_project_location.name:
+                    project_location_arg = json.loads(item.raw_item.arguments)['location']
+                    self.project_location_str = project_location_arg['name']
+                    self.project_location = Location(
+                        name=project_location_arg['name'],
+                        latitude = project_location_arg['latitude'],
+                        longitude = project_location_arg['longitude'],
+                    )
+                elif item.raw_item.name == report_locations.name:
+                    locations_list_arg = json.loads(item.raw_item.arguments)['locations']['locations']
+                    self.relevant_locations = [
+                        Location(
+                            name=loc['name'],
+                            latitude=loc['latitude'],
+                            longitude=loc['longitude']
+                        )
+                        for loc in locations_list_arg
+                    ]
+        if len(self.relevant_locations) > 0:
+            self.relevant_locations_str = 'Here are the distances from the project location to relevant locations:\n'
+            for relevant_location in self.relevant_locations:
+                distance_to_project = geopy.distance.distance(
+                    (self.project_location.latitude, self.project_location.longitude),
+                    (relevant_location.latitude, relevant_location.longitude)
+                ).miles
+                self.relevant_locations_str += f'\n- "{relevant_location.name}": {distance_to_project:.2f} miles\n'
+
+
+    def get_relevant_locations_pydeck(
+            self,
+            show_labels:bool = False,
+            basemap_provider: str = "mapbox",
+            mapbox_style: Optional[str] = None,
+            mapbox_api_key: Optional[str] = None
+    ):
+        assert self.relevant_locations is not None and len(self.relevant_locations) > 0, 'No relevant locations available for pydeck rendering.'
+        project_lat = float(self.project_location.latitude)
+        project_lon = float(self.project_location.longitude)
+        locations = []
+        for loc in self.relevant_locations:
+            locations.append(
+                (
+                    loc.latitude,
+                    loc.longitude,
+                    loc.name,
+                )
+            )
+
+        return make_project_arc_deck(
+            project_lat=project_lat,
+            project_lon=project_lon,
+            locations=locations,
+            output_html=None,
+            return_html_string=False,
+            basemap_provider=basemap_provider,
+            mapbox_style=mapbox_style,
+            mapbox_api_key = mapbox_api_key,
+            show_labels=show_labels,
+            text_size=14,
+            label_offset_deg=0.12,
+            initial_zoom=8,
+        )
+
+
+    # async def get_project_location(self):
+    #     search_location = create_search_location_tool(self.gcloud_api_key)
+    #     location_agent = Agent(
+    #         name="Project Location Extraction Agent",
+    #         instructions=self.project_location_prompt,
+    #         tools=[search_location],
+    #         model=self.openai_model
+    #     )
+    #     upload_coroutines = [
+    #         get_or_upload_async(
+    #             file_path=path,
+    #             client=self.openai_client,
+    #             cache_path=self.openai_files_cache_path,
+    #             purpose='user_data'
+    #         )
+    #         for path in [self.payroll_file_path, self.db_wages_file_path]
+    #     ]
+    #     async with self._sem:
+    #         payroll_file_id, db_wages_file_id = await asyncio.gather(*upload_coroutines)
+    #     location_input = [
+    #         {
+    #             'role': 'user',
+    #             'content': [
+    #                 {
+    #                     'type': 'input_file',
+    #                     'file_id': payroll_file_id
+    #                 },
+    #                 {
+    #                     'type': 'input_file',
+    #                     'file_id': db_wages_file_id
+    #                 }
+    #             ]
+    #         }
+    #     ]
+    #
+    #     if self.payroll_ocr_str is not None:
+    #         location_input[0]['content'].append({
+    #             'type': 'input_text',
+    #             'text': 'The following text was extracted from the payroll file via OCR. Use it to cross-reference with the payroll file:\n' + self.payroll_ocr_str
+    #         })
+    #     async with self._sem:
+    #         with trace('Project Location Extraction Workflow'):
+    #             location_result = await Runner.run(
+    #                 location_agent,
+    #                 input=location_input
+    #             )
+    #         self.project_location_str = location_result.final_output
+    #     return self.project_location_str
 
     def get_db_wages_file_text(self, include_line_nos: bool = True, return_page_lengths: bool = False):
         page_lengths = []
@@ -311,6 +456,11 @@ class ComplianceChecker:
                 'type': 'input_text',
                 'text': 'The location of the project has been determined: \n' + self.project_location_str
             })
+        if self.relevant_locations_str is not None:
+            openai_compliance_input[0]['content'].append({
+                'type': 'input_text',
+                'text': self.relevant_locations_str
+            })
         async with self._sem:
             with trace('Payroll Compliance Workflow'):
                 openai_compliance_result = await Runner.run(openai_compliance_agent, input=openai_compliance_input)
@@ -372,6 +522,11 @@ class ComplianceChecker:
             claude_compliance_input[0]['content'].append({
                 'type': 'text',
                 'text': 'The project is located in the following county/location: ' + self.project_location_str
+            })
+        if self.relevant_locations_str is not None:
+            claude_compliance_input[0]['content'].append({
+                'type': 'text',
+                'text': self.relevant_locations_str
             })
         async with self._sem:
             for wait in range(self.max_claude_waits):
@@ -465,6 +620,11 @@ class ComplianceChecker:
                 'type': 'input_text',
                 'text': 'The project is located in the following county/location: ' + self.project_location_str
             })
+        if self.relevant_locations_str is not None:
+            openai_check_input[0]['content'].append({
+                'type': 'input_text',
+                'text': self.relevant_locations_str
+            })
         openai_check_input[0]['content'].append({
             'type': 'input_text',
             'text': f'Please extract the payroll information for the following employee: {employee_wage_check.employee_name}'
@@ -533,6 +693,11 @@ class ComplianceChecker:
             claude_check_input[0]['content'].append({
                 'type': 'text',
                 'text': 'The project is located in the following county/location: ' + self.project_location_str
+            })
+        if self.relevant_locations_str is not None:
+            claude_check_input[0]['content'].append({
+                'type': 'text',
+                'text': self.relevant_locations_str
             })
         claude_check_input[0]['content'].append({
             'type': 'text',
@@ -608,8 +773,8 @@ class ComplianceChecker:
             print('OCR complete.')
 
         if self.project_location_str is None:
-            print('Getting project location...')
-            await self.get_project_location()
+            print('Getting relevant locations...')
+            await self.get_relevant_locations()
             print(f'Project location: {self.project_location_str}')
 
         # Run compliance tables from both AI models

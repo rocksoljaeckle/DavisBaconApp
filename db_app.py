@@ -226,6 +226,12 @@ def show_citation_dialog(
     else:
         st.warning('No citations found for this employee. The source may not be clearly identifiable in the document.')
 
+@st.dialog('Relevant locations map', width='large')
+def show_relevant_locations_map_dialog(pydeck_map, file_name: str):
+    """Show relevant locations map."""
+    st.markdown(f'### Relevant Locations for Project: {file_name}')
+    st.pydeck_chart(pydeck_map)
+
 def show_employee_additional_info(wage_check: EmployeeWageCheck, compliance_checker: ComplianceChecker, employee_index: int, payroll_index: int):
     """Show additional information for a given employee."""
     compliance_check_symbol = get_compliance_symbol(wage_check.compliance)
@@ -348,6 +354,7 @@ def render_compliance_results(cell_style_jscode: JsCode):
         st.rerun()
     for payroll_index, compliance_result in enumerate(st.session_state['compliance_results']):
         if payroll_index in st.session_state['failed_indices']:
+            st.write(compliance_result['exception']) # todo remove?
             continue
         compliance_checker = compliance_result['compliance_checker']
 
@@ -435,6 +442,11 @@ def render_compliance_results(cell_style_jscode: JsCode):
                 st.warning('The following wage checks were found only by Claude:')
                 for claude_wc in compliance_result['unmatched_claude']:
                     st.markdown(f'  - {claude_wc.employee_name}, Title: "{claude_wc.title}", DB Classification: "{claude_wc.davis_bacon_classification}", DB Total Rate: {claude_wc.davis_bacon_total_rate}, Paid Rate: {claude_wc.paid_rate}')
+            if compliance_checker.relevant_locations is not None and len(compliance_checker.relevant_locations) > 0:
+                if st.button('Show Relevant Locations on Map', key=f'show_relevant_locations_map_{payroll_index}'):
+                    pydeck_map = compliance_checker.get_relevant_locations_pydeck(show_labels = False, mapbox_style = "mapbox://styles/mapbox/light-v11", mapbox_api_key = st.secrets['mapbox_api_key'])
+                    show_relevant_locations_map_dialog(pydeck_map, file_name)
+
         st.divider()
 
 def get_compliance_results(
@@ -467,8 +479,9 @@ def get_compliance_results(
         claude_compliance_matrix_prompt = f.read()
     with open(config_dict['claude_single_wage_check_prompt_path'], 'r', encoding='utf-8') as f:
         claude_single_wage_check_prompt = f.read()
-    with open(config_dict['project_location_prompt_path'], 'r', encoding='utf-8') as f:
-        project_location_prompt = f.read()
+    with open(config_dict['relevant_locations_prompt_path'], 'r', encoding='utf-8') as f:
+        relevant_locations_prompt = f.read()
+
 
     compliance_semaphore = asyncio.Semaphore(config_dict['max_concurrent_compliance_checks'])
     compliance_checkers = [
@@ -480,7 +493,7 @@ def get_compliance_results(
             openai_single_wage_check_prompt = openai_single_wage_check_prompt,
             claude_compliance_matrix_prompt = claude_compliance_matrix_prompt,
             claude_single_wage_check_prompt = claude_single_wage_check_prompt,
-            project_location_prompt = project_location_prompt,
+            relevant_locations_prompt = relevant_locations_prompt,
             openai_api_key = st.secrets['openai_api_key'],
             anthropic_api_key = st.secrets['anthropic_api_key'],
             unstract_api_key = st.secrets['unstract_api_key'],
@@ -510,6 +523,7 @@ def get_compliance_results(
                     'disputed_wage_checks': None,
                     'unmatched_openai': None,
                     'unmatched_claude': None,
+                    'exception': tasks_results[payroll_ind],
                 }
             )
             failed_indices.append(payroll_ind)
