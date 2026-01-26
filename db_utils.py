@@ -301,56 +301,6 @@ class ComplianceChecker:
             initial_zoom=8,
         )
 
-
-    # async def get_project_location(self):
-    #     search_location = create_search_location_tool(self.gcloud_api_key)
-    #     location_agent = Agent(
-    #         name="Project Location Extraction Agent",
-    #         instructions=self.project_location_prompt,
-    #         tools=[search_location],
-    #         model=self.openai_model
-    #     )
-    #     upload_coroutines = [
-    #         get_or_upload_async(
-    #             file_path=path,
-    #             client=self.openai_client,
-    #             cache_path=self.openai_files_cache_path,
-    #             purpose='user_data'
-    #         )
-    #         for path in [self.payroll_file_path, self.db_wages_file_path]
-    #     ]
-    #     async with self._sem:
-    #         payroll_file_id, db_wages_file_id = await asyncio.gather(*upload_coroutines)
-    #     location_input = [
-    #         {
-    #             'role': 'user',
-    #             'content': [
-    #                 {
-    #                     'type': 'input_file',
-    #                     'file_id': payroll_file_id
-    #                 },
-    #                 {
-    #                     'type': 'input_file',
-    #                     'file_id': db_wages_file_id
-    #                 }
-    #             ]
-    #         }
-    #     ]
-    #
-    #     if self.payroll_ocr_str is not None:
-    #         location_input[0]['content'].append({
-    #             'type': 'input_text',
-    #             'text': 'The following text was extracted from the payroll file via OCR. Use it to cross-reference with the payroll file:\n' + self.payroll_ocr_str
-    #         })
-    #     async with self._sem:
-    #         with trace('Project Location Extraction Workflow'):
-    #             location_result = await Runner.run(
-    #                 location_agent,
-    #                 input=location_input
-    #             )
-    #         self.project_location_str = location_result.final_output
-    #     return self.project_location_str
-
     def get_db_wages_file_text(self, include_line_nos: bool = True, return_page_lengths: bool = False):
         page_lengths = []
         db_wages_doc = fitz.open(self.db_wages_file_path)
