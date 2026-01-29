@@ -15,12 +15,21 @@ import ftfy
 from rapidfuzz import fuzz
 from rapidfuzz.utils import default_process as rapidfuzz_default_process
 import time
+import importlib
 
 import nest_asyncio
 nest_asyncio.apply() # todo this is hacky - necessary?
 
+DEV_MODE = False # todo set false for deployment
+
+if DEV_MODE: # force reload of db_utils for easier dev
+    import sys
+    for mod_name in list(sys.modules.keys()):
+        if mod_name in ['db_utils']:
+            del sys.modules[mod_name]
 
 from db_utils import ComplianceChecker, EmployeeWageCheck, ComplianceTable
+
 
 
 #login
@@ -43,8 +52,8 @@ class DisputeTable:
         for dispute_ind, (openai_wc, claude_wc) in enumerate(disputed_wage_checks):
             items_dict = {'index': dispute_ind, 'employee_name': openai_wc.employee_name}
 
-            title_item = DisputeItem(openai_wc.title, claude_wc.title)
-            if fuzz.ratio(openai_wc.title, claude_wc.title, processor=rapidfuzz_default_process) < 80.:
+            title_item = DisputeItem(openai_wc.payroll_title, claude_wc.payroll_title)
+            if fuzz.ratio(openai_wc.payroll_title, claude_wc.payroll_title, processor=rapidfuzz_default_process) < 80.:
                 title_item.matched = False
             else:
                 title_item.matched = True
@@ -130,7 +139,7 @@ def reset_st_session_state():
 
 @st.dialog("Help & Documentation", width="large")
 def show_help():
-    with open("documents/davis-bacon-help.html", "r", encoding = 'utf-8') as f:
+    with open("davis-bacon-help.html", "r", encoding = 'utf-8') as f:
         st.html(f.read())
 
 def get_compliance_symbol(compliance: str):
@@ -146,6 +155,13 @@ def get_compliance_symbol(compliance: str):
         case _:
             return compliance
 
+def get_bool_compliance_symbol(is_compliant: bool):
+    """Get compliance symbol for a given boolean compliance status."""
+    if is_compliant:
+        return '✅'
+    else:
+        return '❌'
+
 @st.dialog('View Citation Source', width='large')
 def show_citation_dialog(
         wage_check: EmployeeWageCheck,
@@ -159,7 +175,8 @@ def show_citation_dialog(
     """Show citation source for a given wage check."""
     st.markdown(f'### Finding source for: {wage_check.employee_name}')
     if not disputed:
-        st.markdown(f'**Title:** {wage_check.title} | **Paid Rate:** \\${wage_check.paid_rate:,.2f} | **Davis-Bacon Classification:** {wage_check.davis_bacon_classification} | **Davis-Bacon Total Rate:** \\${wage_check.davis_bacon_total_rate:,.2f} | Compliance: {get_compliance_symbol(wage_check.compliance)}')
+        st.write(wage_check.davis_bacon_classification)
+        st.markdown(f'**Title:** {wage_check.payroll_title} | **Identification Number:** {wage_check.identification_number} | **Paid Rate:** \\${wage_check.paid_rate:,.2f} | **Overtime rate:** \\${wage_check.overtime_rate} | **Davis-Bacon Classification:** {wage_check.davis_bacon_classification} | **Davis-Bacon Total Rate:** \\${wage_check.davis_bacon_total_rate:,.2f} | Compliance: {get_compliance_symbol(wage_check.compliance)}')
 
     # Initialize cache if it doesn't exist
     if 'citation_cache' not in st.session_state:
@@ -175,7 +192,7 @@ def show_citation_dialog(
         (db_wages_citation_images, db_wages_citation_page_numbers), (payroll_citation_images, payroll_citation_page_numbers) = st.session_state['citation_cache'][cache_key]
         st.info('Loaded source from cache')
     else:
-        with st.spinner('Generating citation (<10 seconds) ...', show_time=True):
+        with st.spinner('Generating citation (<5 seconds) ...', show_time=True):
             try:
                 if payroll_citation_line_hexes_override is None:
                     payroll_citation_line_hexes = wage_check.payroll_citation_lines
@@ -239,7 +256,7 @@ def show_employee_additional_info(wage_check: EmployeeWageCheck, compliance_chec
     l_col, r_col = st.columns([1, 9])
     with l_col.popover('Additional Info'):
         st.markdown(f'**Employee Name:** {wage_check.employee_name}')
-        st.markdown(f'**Title:** {wage_check.title}')
+        st.markdown(f'**Title:** {wage_check.payroll_title}')
         st.markdown(f'**Davis-Bacon Classification:** {wage_check.davis_bacon_classification}')
         st.markdown(f'**Davis-Bacon Total Rate:** ${wage_check.davis_bacon_total_rate:,.2f}')
         st.markdown(f'**Paid Rate:** ${wage_check.paid_rate:,.2f}')
@@ -305,15 +322,23 @@ def get_tables_html(compliance_results: list[dict], failed_indices: list[int]):
         if ind in failed_indices:
             tables_html += f'\n<p style = "font-size: 25px; color:red">{compliance_result["file_name"]} - FAILED TO PROCESS</p>'
             continue
+
         compliance_table = compliance_result['compliance_table']
+        tables_html += f'\n<p style = "font-size: 25px;">{compliance_table.payroll_name} ({compliance_result['file_name']})<br></p>'
+        tables_html += f'\n<p style = "font-size: 20px;">Payroll covers one week: {get_bool_compliance_symbol(compliance_table.is_one_week)}<br></p>'
+        tables_html += f'\n<p style = "font-size: 20px;">Payroll contains contract number: {get_bool_compliance_symbol(compliance_table.has_contract_number)}<br></p>'
+        tables_html += f'\n<p style = "font-size: 20px;">Payroll mathematically correct: {get_bool_compliance_symbol(compliance_table.mathematically_correct)}<br></p>'
+        tables_html += f'\n<p style = "font-size: 20px;">Payroll has statement of compliance: {get_bool_compliance_symbol(compliance_table.has_compliance_statement)}<br></p>'
+        tables_html += f'\n<p style = "font-size: 20px;">Payroll is signed: {get_bool_compliance_symbol(compliance_table.signed)}<br></p>'
+
         if len(compliance_table.wage_checks) == 0:
-            tables_html+= f'\n<p style = "font-size: 25px;">{compliance_result["file_name"]} - NO AGREED CHECKS FOUND IN PAYROLL</p>'
+            tables_html+= f'\n<p style = "font-size: 25px;">NO AGREED CHECKS FOUND IN PAYROLL</p>'
         else:
             data_rows = [wage_check.model_dump() for wage_check in compliance_table.wage_checks]
             data_rows = [{key: value for key, value in row.items() if key not in ['compliance_reasoning', 'overtime_rate', 'payroll_citation_lines', 'wage_determination']}
                          for row in data_rows]
             table_df = DataFrame(data_rows)
-            tables_html += f'\n<p style = "font-size: 25px;">{compliance_table.payroll_name}<br></p>' + table_df.to_html()
+            tables_html += table_df.to_html()
 
         if compliance_result['disputed_wage_checks']:
             dispute_table = DisputeTable(compliance_result['disputed_wage_checks'])
@@ -321,11 +346,15 @@ def get_tables_html(compliance_results: list[dict], failed_indices: list[int]):
             tables_html += f'\n<p style = "font-size: 20px;"><br>Disputed Wage Checks<br></p>' + disputed_df.to_html()
     return tables_html
 
-def get_aggrid_options(df: DataFrame, hidden_cols: list[str], cell_style_jscode: JsCode):
+def get_aggrid_options(df: DataFrame, hidden_cols: list[str], column_widths: dict, column_names: dict, cell_style_jscode: JsCode):
     """Get AgGrid grid options for a given DataFrame."""
     gb = GridOptionsBuilder.from_dataframe(dataframe=df)
     gb.configure_selection('single', use_checkbox=False)
     gb.configure_default_column(cellStyle=cell_style_jscode)
+    for col_name, width in column_widths.items():
+        gb.configure_column(col_name, width=width)
+    for col_name, display_name in column_names.items():
+        gb.configure_column(col_name, header_name=display_name)
     gb.configure_auto_height(autoHeight=False)
     for hidden in hidden_cols:
         gb.configure_column(hidden, hide = True)
@@ -354,6 +383,7 @@ def render_compliance_results(cell_style_jscode: JsCode):
         st.rerun()
     for payroll_index, compliance_result in enumerate(st.session_state['compliance_results']):
         if payroll_index in st.session_state['failed_indices']:
+            st.write(compliance_result)
             st.write(compliance_result['exception']) # todo remove?
             continue
         compliance_checker = compliance_result['compliance_checker']
@@ -369,12 +399,44 @@ def render_compliance_results(cell_style_jscode: JsCode):
             data_dict['index'] = ind
             data_list.append(data_dict)
         data = DataFrame(data_list)
-        data.drop('overtime_rate', axis=1, inplace=True, errors='ignore')
-        data.drop('citation_lines', axis=1, inplace=True, errors='ignore')
+        # data.drop('overtime_rate', axis=1, inplace=True, errors='ignore') # todo reinstate?
+        data.drop('payroll_citation_lines', axis=1, inplace=True, errors='ignore')
+        data.drop('wage_determination_citation_lines', axis=1, inplace=True, errors='ignore')
 
-        grid_options = get_aggrid_options(data, hidden_cols=['index', 'compliance_reasoning', 'payroll_citation_lines', 'wage_determination_citation_lines'], cell_style_jscode=cell_style_jscode)
+        column_widths = {
+            'identification_number': 200,
+            'employee_name': 200,
+            'payroll_title': 200,
+            'davis_bacon_classification': 200,
+            'davis_bacon_base_rate': 150,
+            'davis_bacon_total_rate': 150,
+            'paid_rate': 100,
+            'overtime_rate': 100,
+            # 'compliance': 100,
+        }
+        column_names = {
+            'identification_number': 'ID Number',
+            'employee_name': 'Employee Name',
+            'payroll_title': 'Payroll Title',
+            'davis_bacon_classification': 'DB Classification',
+            'davis_bacon_base_rate': 'DB Base Rate',
+            'davis_bacon_total_rate': 'DB Total Rate',
+            'paid_rate': 'Paid Rate',
+            'overtime_rate': 'Overtime Rate',
+            'compliance': 'Compliance',
+        }
+        hidden_cols = ['index', 'compliance_reasoning', 'payroll_citation_lines', 'wage_determination_citation_lines']
+        grid_options = get_aggrid_options(data, hidden_cols=hidden_cols, column_widths = column_widths, column_names = column_names, cell_style_jscode=cell_style_jscode)
         with st.expander(label=f'({file_name}) - {compliance_table.payroll_name}', expanded=False):
             st.write(f'**Project location**: {compliance_checker.project_location_str}')
+            st.write(f'Payroll covers one week: {get_bool_compliance_symbol(compliance_table.is_one_week)}')
+            st.write(f'Payroll contains contract number: {get_bool_compliance_symbol(compliance_table.has_contract_number)}')
+            st.write(f'Payroll mathematically correct: {get_bool_compliance_symbol(compliance_table.mathematically_correct)}')
+            st.write(f'Payroll has statement of compliance: {get_bool_compliance_symbol(compliance_table.has_compliance_statement)}')
+            st.write(f'Payroll is signed: {get_bool_compliance_symbol(compliance_table.signed)}')
+            with st.popover('Notes'):
+                st.write(compliance_table.notes)
+            st.markdown(f'### Agreed Wage Checks ({len(data)} employees):')
 
             if len(data) == 0:
                 if compliance_result['disputed_wage_checks']:
@@ -409,7 +471,25 @@ def render_compliance_results(cell_style_jscode: JsCode):
 
                 dispute_table = DisputeTable(compliance_result['disputed_wage_checks'])
                 disputed_data = dispute_table.get_df()
-                grid_options = get_aggrid_options(disputed_data, hidden_cols=['index'], cell_style_jscode=cell_style_jscode)
+                column_widths = {
+                    'employee_name': 200,
+                    'title': 250,
+                    'davis_bacon_classification': 250,
+                    'davis_bacon_total_rate': 150,
+                    'paid_rate': 100,
+                    'compliance': 100,
+                }
+                column_names = {
+                    'identification_number': 'ID Number',
+                    'employee_name': 'Employee Name',
+                    'payroll_title': 'Payroll Title',
+                    'davis_bacon_classification': 'DB Classification',
+                    'davis_bacon_base_rate': 'DB Base Rate',
+                    'davis_bacon_total_rate': 'DB Total Rate',
+                    'paid_rate': 'Paid Rate',
+                    'compliance': 'Compliance',
+                }
+                grid_options = get_aggrid_options(disputed_data, hidden_cols=['index'], column_widths=column_widths, column_names = column_names, cell_style_jscode = cell_style_jscode)
                 st.markdown('## Disputed Wage Checks:')
                 st.markdown('_Select an employee/row to view additional information (below table)_')
                 disputed_data_response = AgGrid(
@@ -437,11 +517,11 @@ def render_compliance_results(cell_style_jscode: JsCode):
             if compliance_result['unmatched_openai']:
                 st.warning('The following wage checks were found only by OpenAI:')
                 for openai_wc in compliance_result['unmatched_openai']:
-                    st.markdown(f'  - {openai_wc.employee_name}, Title: "{openai_wc.title}", DB Classification: "{openai_wc.davis_bacon_classification}", DB Total Rate: {openai_wc.davis_bacon_total_rate}, Paid Rate: {openai_wc.paid_rate}')
+                    st.markdown(f'  - {openai_wc.employee_name}, Title: "{openai_wc.payroll_title}", DB Classification: "{openai_wc.davis_bacon_classification}", DB Total Rate: {openai_wc.davis_bacon_total_rate}, Paid Rate: {openai_wc.paid_rate}')
             if compliance_result['unmatched_claude']:
                 st.warning('The following wage checks were found only by Claude:')
                 for claude_wc in compliance_result['unmatched_claude']:
-                    st.markdown(f'  - {claude_wc.employee_name}, Title: "{claude_wc.title}", DB Classification: "{claude_wc.davis_bacon_classification}", DB Total Rate: {claude_wc.davis_bacon_total_rate}, Paid Rate: {claude_wc.paid_rate}')
+                    st.markdown(f'  - {claude_wc.employee_name}, Title: "{claude_wc.payroll_title}", DB Classification: "{claude_wc.davis_bacon_classification}", DB Total Rate: {claude_wc.davis_bacon_total_rate}, Paid Rate: {claude_wc.paid_rate}')
             if compliance_checker.relevant_locations is not None and len(compliance_checker.relevant_locations) > 0:
                 if st.button('Show Relevant Locations on Map', key=f'show_relevant_locations_map_{payroll_index}'):
                     pydeck_map = compliance_checker.get_relevant_locations_pydeck(show_labels = False, mapbox_style = "mapbox://styles/mapbox/light-v11", mapbox_api_key = st.secrets['mapbox_api_key'])
@@ -519,30 +599,32 @@ def get_compliance_results(
                 {
                     'file_name': file_name,
                     'compliance_checker': compliance_checkers[payroll_ind],
-                    'compliance_table': None,
-                    'disputed_wage_checks': None,
-                    'unmatched_openai': None,
-                    'unmatched_claude': None,
                     'exception': tasks_results[payroll_ind],
                 }
             )
             failed_indices.append(payroll_ind)
         else:
             compliance_table, disputed_wage_checks, unmatched_openai, unmatched_claude = tasks_results[payroll_ind]
-            if compliance_table is not None:
-                compliance_table = fix_table_checks(compliance_table)
-            compliance_results.append(
-                {
-                    'file_name': file_name,
-                    'compliance_checker': compliance_checkers[payroll_ind],
-                    'compliance_table': compliance_table,
-                    'disputed_wage_checks': disputed_wage_checks,
-                    'unmatched_openai': unmatched_openai,
-                    'unmatched_claude': unmatched_claude,
-                }
-            )
             if compliance_table is None:
+                compliance_results.append(
+                    {
+                        'file_name': file_name,
+                        'exception': ValueError('Compliance table is None')
+                    }
+                )
                 failed_indices.append(payroll_ind)
+            else:
+                compliance_table = fix_table_checks(compliance_table)
+                compliance_results.append(
+                    {
+                        'file_name': file_name,
+                        'compliance_checker': compliance_checkers[payroll_ind],
+                        'compliance_table': compliance_table,
+                        'disputed_wage_checks': disputed_wage_checks,
+                        'unmatched_openai': unmatched_openai,
+                        'unmatched_claude': unmatched_claude,
+                    }
+                )
     return compliance_results, failed_indices
 
 if 'citation_prompt' not in st.session_state:
@@ -628,6 +710,7 @@ if 'compliance_results' not in st.session_state:
 
     if st.button('Check Payroll Compliance'):
         if payroll_files and db_wages_file:
+            st.write('Do not interact with the app until processing is complete.')
             with st.spinner('Checking compliance (may take several minutes)...', show_time=True):
                 st.session_state['compliance_results'], st.session_state['failed_indices'] = get_compliance_results(payroll_files, db_wages_file)
                 # st.session_state['compliance_results'] is a list of dicts with keys:

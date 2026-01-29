@@ -10,8 +10,11 @@ from openai import OpenAI, AsyncOpenAI
 import uuid
 import os
 import asyncio
+import pytesseract
 
 from GlobalUtils.ocr import whisper_pdf_text_extraction
+from unstract.llmwhisperer import LLMWhispererClientV2
+
 
 class CitationLines(BaseModel):
     lines: list[int]
@@ -51,10 +54,11 @@ def render_line_highlights(
     img = Image.open(io.BytesIO(pix_bytes))
     return img.convert('RGB')
 
-def render_pdf_page_with_highlights(
+def render_pdf_page_metadata_highlights(
         pdf_source: str | bytes,
         page: int,
-        bboxes: list[list[float]],
+        line_metadatas: list[list[int]],
+        detect_rotation: bool = False,
         highlight_color: tuple[float, float, float] = (1, 1, 0),  # RGB 0-1, default yellow
         highlight_opacity: float = 0.3,
         zoom: float = 2.0  # Higher = better quality, 2.0 is good default
@@ -86,8 +90,116 @@ def render_pdf_page_with_highlights(
     pdf_page = doc[page]
 
     # Render page at higher resolution
-    mat = fitz.Matrix(zoom, zoom)
-    pix = pdf_page.get_pixmap(matrix=mat)
+    render_mat = fitz.Matrix(zoom, zoom).prerotate(pdf_page.rotation)
+
+    if detect_rotation:
+        print('Detecting rotation via OSD...')
+        try:
+            osd_mat = fitz.Matrix(1.5, 1.5).prerotate(pdf_page.rotation)
+            small_pix = pdf_page.get_pixmap(matrix=osd_mat)
+            small_img = Image.frombytes("RGB", [small_pix.width, small_pix.height], small_pix.samples)
+            osd = pytesseract.image_to_osd(small_img)
+            for line in osd.split('\n'):
+                if 'Rotate:' in line:
+                    detected_rotation = int(line.split(':')[1].strip())
+                    render_mat = render_mat.prerotate(detected_rotation)
+                    print(f'Detected rotation: {detected_rotation} degrees')
+                    break
+        except pytesseract.TesseractError as e:
+            print(f'Error during OSD rotation detection: {e}')
+            pass
+
+    pix = pdf_page.get_pixmap(matrix=render_mat)
+
+
+
+    # Convert to PIL Image
+    img_data = pix.tobytes("png")
+    img = Image.open(io.BytesIO(img_data))
+
+    # Create a semi-transparent overlay
+    overlay = Image.new('RGBA', img.size, (255, 255, 255, 0))
+    draw = ImageDraw.Draw(overlay)
+
+    # Draw highlight rectangles
+    llm_whisperer_client = LLMWhispererClientV2()
+    for line_data in line_metadatas:
+        scaled_bbox = llm_whisperer_client.get_highlight_rect(line_data, target_width = img.width, target_height = img.height)
+        scaled_bbox = scaled_bbox[1:]  # remove page number
+        # Convert RGB 0-1 to 0-255
+        color_255 = tuple(int(c * 255) for c in highlight_color)
+        alpha = int(highlight_opacity * 255)
+        fill_color = (*color_255, alpha)
+
+        # Draw filled rectangle
+        draw.rectangle(scaled_bbox, fill=fill_color, width=3)
+
+    # Composite the overlay onto the original image
+    img = img.convert('RGBA')
+    img = Image.alpha_composite(img, overlay)
+
+    doc.close()
+
+    return img.convert('RGB')  # Convert back to RGB for st.image
+
+def render_pdf_page_with_highlights(
+        pdf_source: str | bytes,
+        page: int,
+        bboxes: list[list[float]],
+        detect_rotation: bool = False,
+        highlight_color: tuple[float, float, float] = (1, 1, 0),  # RGB 0-1, default yellow
+        highlight_opacity: float = 0.3,
+        zoom: float = 2.0  # Higher = better quality, 2.0 is good default
+) -> Image.Image:
+    """
+    Render a PDF page with a highlighted bounding box.
+
+    Args:
+        pdf_source: Path to PDF file, or PDF bytes
+        page: Page number (0-indexed)
+        bbox: Bounding box as [x0, y0, x1, y1] in PDF coordinates
+        highlight_color: RGB tuple with values 0-1
+        highlight_opacity: Transparency of highlight (0-1)
+        zoom: Rendering resolution multiplier
+
+    Returns:
+        PIL Image with highlighted region
+    """
+    if isinstance(pdf_source, bytes):
+        doc = fitz.open(stream=pdf_source)
+    elif isinstance(pdf_source, str):
+        doc = fitz.open(pdf_source)
+    else:
+        raise ValueError('pdf_source must be str path or bytes')
+
+    if page < 0 or page >= len(doc):
+        raise ValueError(f"Page {page} out of range. PDF has {len(doc)} pages.")
+
+    pdf_page = doc[page]
+
+    # Render page at higher resolution
+    render_mat = fitz.Matrix(zoom, zoom).prerotate(pdf_page.rotation)
+
+    if detect_rotation:
+        print('Detecting rotation via OSD...')
+        try:
+            osd_mat = fitz.Matrix(1.5, 1.5).prerotate(pdf_page.rotation)
+            small_pix = pdf_page.get_pixmap(matrix=osd_mat)
+            small_img = Image.frombytes("RGB", [small_pix.width, small_pix.height], small_pix.samples)
+            osd = pytesseract.image_to_osd(small_img)
+            for line in osd.split('\n'):
+                if 'Rotate:' in line:
+                    detected_rotation = int(line.split(':')[1].strip())
+                    render_mat = render_mat.prerotate(detected_rotation)
+                    print(f'Detected rotation: {detected_rotation} degrees')
+                    break
+        except pytesseract.TesseractError as e:
+            print(f'Error during OSD rotation detection: {e}')
+            pass
+
+    pix = pdf_page.get_pixmap(matrix=render_mat)
+
+
 
     # Convert to PIL Image
     img_data = pix.tobytes("png")
@@ -217,9 +329,52 @@ async def find_citation_bboxes_normed(
     ]
     return line_boxes # normed to (0,1)
 
+def render_pdf_line_metadatas_to_images(
+        whisper_line_metadatas: list[list[int]],
+        pdf_source: str | bytes,
+        detect_rotation: bool = False
+):
+    """
+    Generate images for each page in source document, with  citation bounding boxes highlighted.
+
+    Args:
+        citation_bboxes: List of dicts with 'page' and 'bbox' keys in normalized coordinates (0-1)
+        pdf_source: Path to PDF file, or PDF bytes
+    Returns:
+        images, page_numbers - List of PIL Images with highlighted regions, page number for each image
+    """
+    if isinstance(pdf_source, bytes):
+        fitz_doc = fitz.Document(stream=pdf_source)
+    elif isinstance(pdf_source, str):
+        fitz_doc = fitz.Document(pdf_source)
+    else:
+        raise ValueError('pdf_source must be str path or bytes')
+    fitz_doc.close()
+
+    page_bboxes = {}
+
+    for citation_line_data in whisper_line_metadatas:
+        page = citation_line_data[0]
+        if page not in page_bboxes:
+            page_bboxes[page] = []
+        page_bboxes[page].append(citation_line_data)
+    images = []
+    page_numbers = []
+    for page, line_metadatas in page_bboxes.items():
+        img = render_pdf_page_metadata_highlights(
+            pdf_source=pdf_source,
+            page=page,
+            line_metadatas=line_metadatas,
+            detect_rotation = detect_rotation
+        )
+        images.append(img)
+        page_numbers.append(page)
+    return images, page_numbers
+
 def render_pdf_bboxes_to_images(
         citation_bboxes: list[dict],
         pdf_source: str | bytes,
+        detect_rotation: bool = False
 ):
     """
     Generate images for each page in source document, with  citation bounding boxes highlighted.
@@ -258,7 +413,8 @@ def render_pdf_bboxes_to_images(
         img = render_pdf_page_with_highlights(
             pdf_source=pdf_source,
             page=page,
-            bboxes=bboxes
+            bboxes=bboxes,
+            detect_rotation = detect_rotation
         )
         images.append(img)
         page_numbers.append(page)

@@ -8,29 +8,18 @@ import os
 
 import pandas as pd
 import pydeck as pdk
+from pydantic import BaseModel
 
-@dataclass(frozen=True)
-class Location:
-    lat: float
-    lon: float
+class StoredLocation(BaseModel):
     name: str
+    latitude: float
+    longitude: float
+    project_distance: float
 
 
-LocationLike = Union[Location, Tuple[float, float, str]]
 
 
-def _to_locations(locations: Sequence[LocationLike]) -> List[Location]:
-    out: List[Location] = []
-    for item in locations:
-        if isinstance(item, Location):
-            out.append(item)
-        else:
-            lat, lon, name = item
-            out.append(Location(float(lat), float(lon), str(name)))
-    return out
-
-
-def _auto_zoom(project_lat: float, project_lon: float, locs: Sequence[Location]) -> int:
+def _auto_zoom(project_lat: float, project_lon: float, locs: Sequence[StoredLocation]) -> int:
     def hav_km(lat1, lon1, lat2, lon2):
         r = 6371.0
         p1, p2 = math.radians(lat1), math.radians(lat2)
@@ -42,7 +31,7 @@ def _auto_zoom(project_lat: float, project_lon: float, locs: Sequence[Location])
     if not locs:
         return 12
 
-    max_km = max(hav_km(project_lat, project_lon, l.lat, l.lon) for l in locs)
+    max_km = max(hav_km(project_lat, project_lon, l.latitude, l.longitude) for l in locs)
 
     if max_km < 25:
         return 12
@@ -72,10 +61,8 @@ def _pick_basemap(basemap_provider: str, mapbox_style: str) -> str:
 def make_project_arc_deck(
     project_lat: float,
     project_lon: float,
-    locations: Sequence[LocationLike],
+    locations: Sequence[StoredLocation],
     *,
-    output_html: Optional[str] = None,
-    return_html_string: bool = True,
     show_labels: bool = False,
     basemap_provider: str = "carto",
     mapbox_style: str | None = None,
@@ -93,18 +80,18 @@ def make_project_arc_deck(
     For basemap_provider="carto":
       - no token needed
     """
-    locs = _to_locations(locations)
 
     arc_df = pd.DataFrame(
         [
             {
                 "name": l.name,
-                "src_lon": l.lon,
-                "src_lat": l.lat,
+                "src_lon": l.longitude,
+                "src_lat": l.latitude,
                 "tgt_lon": float(project_lon),
                 "tgt_lat": float(project_lat),
+                "distance": f"{l.project_distance:,.1f}",
             }
-            for l in locs
+            for l in locations
         ]
     )
 
@@ -112,16 +99,17 @@ def make_project_arc_deck(
         [
             {
                 "text": l.name,
-                "lon": l.lon + label_offset_deg,
-                "lat": l.lat,
+                "lon": l.longitude + label_offset_deg,
+                "lat": l.latitude,
+                "distance": l.project_distance,
             }
-            for l in locs
+            for l in locations
         ]
     )
 
     points_df = pd.DataFrame(
         [{"type": "project", "name": "Project", "lon": project_lon, "lat": project_lat}]
-        + [{"type": "location", "name": l.name, "lon": l.lon, "lat": l.lat} for l in locs]
+        + [{"type": "location", "name": l.name, "lon": l.longitude, "lat": l.latitude} for l in locations]
     )
 
     arc_layer = pdk.Layer(
@@ -179,14 +167,20 @@ def make_project_arc_deck(
     tooltip = {
         "html": (
             "<b>{name}</b><br/>"
-            "Source: ({src_lat}, {src_lon})<br/>"
-            "Project: ({tgt_lat}, {tgt_lon})"
+            "Latitude: {src_lat}<br/>"
+            "Longitude: {src_lon}<br/>"
+            "Distance to Project: {distance} miles<br/><br/>"
         ),
-        "style": {"backgroundColor": "white", "color": "black"},
+        "style": {
+            "backgroundColor": "white",
+            "color": "black",
+            "maxWidth": "250px",
+            "wordWrap": "break-word",
+        },
     }
 
     if initial_zoom is None:
-        initial_zoom = _auto_zoom(project_lat, project_lon, locs)
+        initial_zoom = _auto_zoom(project_lat, project_lon, locations)
 
     view_state = pdk.ViewState(
         latitude=float(project_lat),
@@ -212,10 +206,5 @@ def make_project_arc_deck(
                 "or use basemap_provider='carto'."
             )
         pdk.settings.mapbox_api_key = mapbox_api_key
-
-    if output_html:
-        deck.to_html(output_html, open_browser=False)
-    elif return_html_string:
-        return deck.to_html(as_string=True)
 
     return deck

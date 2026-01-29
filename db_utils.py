@@ -19,20 +19,22 @@ import base64
 import googlemaps
 import fitz
 import geopy.distance
+from unstract.llmwhisperer import LLMWhispererClientV2
 
 from GlobalUtils.ocr import async_whisper_pdf_text_extraction
 from GlobalUtils.openai_uploading import get_or_upload_async
 from GlobalUtils.citation import (
     find_best_openai_lines,
     render_line_highlights,
-    render_pdf_bboxes_to_images
+    render_pdf_line_metadatas_to_images
 )
-from pydeck_rendering import make_project_arc_deck
+from pydeck_rendering import make_project_arc_deck, StoredLocation
 
 
 class EmployeeWageCheck(BaseModel):
     employee_name: str
-    title: str
+    identification_number: str
+    payroll_title: str
     davis_bacon_classification: str
     davis_bacon_base_rate: float
     davis_bacon_fringe_rate: float
@@ -47,7 +49,13 @@ class EmployeeWageCheck(BaseModel):
 
 class ComplianceTable(BaseModel):
     payroll_name: str
+    is_one_week: bool
+    has_contract_number: bool
     wage_checks: list[EmployeeWageCheck]
+    mathematically_correct: bool
+    has_compliance_statement: bool
+    signed: bool
+    notes: str
 
 @function_tool
 def report_compliance_table(compliance_table: ComplianceTable):
@@ -248,22 +256,24 @@ class ComplianceChecker:
                     )
                 elif item.raw_item.name == report_locations.name:
                     locations_list_arg = json.loads(item.raw_item.arguments)['locations']['locations']
-                    self.relevant_locations = [
-                        Location(
-                            name=loc['name'],
-                            latitude=loc['latitude'],
-                            longitude=loc['longitude']
+                    self.relevant_locations = []
+                    for loc in locations_list_arg:
+                        distance_to_project = geopy.distance.distance(
+                            (self.project_location.latitude, self.project_location.longitude),
+                            (loc['latitude'],loc['longitude'])
+                        ).miles
+                        self.relevant_locations.append(
+                            StoredLocation(
+                                name=loc['name'],
+                                latitude=loc['latitude'],
+                                longitude=loc['longitude'],
+                                project_distance=distance_to_project
+                            )
                         )
-                        for loc in locations_list_arg
-                    ]
         if len(self.relevant_locations) > 0:
             self.relevant_locations_str = 'Here are the distances from the project location to relevant locations:\n'
             for relevant_location in self.relevant_locations:
-                distance_to_project = geopy.distance.distance(
-                    (self.project_location.latitude, self.project_location.longitude),
-                    (relevant_location.latitude, relevant_location.longitude)
-                ).miles
-                self.relevant_locations_str += f'\n- "{relevant_location.name}": {distance_to_project:.2f} miles\n'
+                self.relevant_locations_str += f'\n- "{relevant_location.name}": {relevant_location.project_distance:.2f} miles\n'
 
 
     def get_relevant_locations_pydeck(
@@ -276,22 +286,11 @@ class ComplianceChecker:
         assert self.relevant_locations is not None and len(self.relevant_locations) > 0, 'No relevant locations available for pydeck rendering.'
         project_lat = float(self.project_location.latitude)
         project_lon = float(self.project_location.longitude)
-        locations = []
-        for loc in self.relevant_locations:
-            locations.append(
-                (
-                    loc.latitude,
-                    loc.longitude,
-                    loc.name,
-                )
-            )
 
         return make_project_arc_deck(
             project_lat=project_lat,
             project_lon=project_lon,
-            locations=locations,
-            output_html=None,
-            return_html_string=False,
+            locations=self.relevant_locations,
             basemap_provider=basemap_provider,
             mapbox_style=mapbox_style,
             mapbox_api_key = mapbox_api_key,
@@ -325,19 +324,12 @@ class ComplianceChecker:
     def get_payroll_citation_images_from_line_hexes(self, citation_line_hexes: list[str]):
         """Get citation images from line hex identifiers using the payroll OCR data."""
         citation_lines = [int(hex, 16)-1 for hex in citation_line_hexes] # the -1 is because unstract hex lines are 1-indexed
-        line_whisper_boxes = [self.payroll_unstract_json['line_metadata'][line_ind] for line_ind in citation_lines]
+        whisper_line_metadatas = [self.payroll_unstract_json['line_metadata'][line_ind] for line_ind in citation_lines]
 
-        line_boxes = [
-            {
-                'page': line_box[0],
-                'bbox': [0.01, (line_box[1] - line_box[2]) / line_box[3], 0.99, (line_box[1]) / line_box[3]]
-            }
-            for line_box in line_whisper_boxes
-        ]
-
-        citation_images, citation_pages = render_pdf_bboxes_to_images(
-            citation_bboxes = line_boxes,
+        citation_images, citation_pages = render_pdf_line_metadatas_to_images(
+            whisper_line_metadatas = whisper_line_metadatas,
             pdf_source=self.payroll_file_path,
+            detect_rotation = True
         )
         return citation_images, citation_pages
 
@@ -503,7 +495,8 @@ class ComplianceChecker:
             claude_wage_checks = [
                 EmployeeWageCheck(
                     employee_name=wage_check['employee_name'],
-                    title=wage_check['title'],
+                    identification_number =wage_check['identification_number'],
+                    payroll_title=wage_check['payroll_title'],
                     davis_bacon_classification=wage_check['davis_bacon_classification'],
                     davis_bacon_base_rate=wage_check['davis_bacon_base_rate'],
                     davis_bacon_fringe_rate=wage_check['davis_bacon_fringe_rate'],
@@ -519,10 +512,16 @@ class ComplianceChecker:
             ]
             claude_compliance_table = ComplianceTable(
                 payroll_name=claude_compliance_result.get('payroll_name', ''),
-                wage_checks=claude_wage_checks
+                is_one_week=claude_compliance_result['is_one_week'],
+                has_contract_number=claude_compliance_result['has_contract_number'],
+                wage_checks=claude_wage_checks,
+                mathematically_correct=claude_compliance_result['mathematically_correct'],
+                signed=claude_compliance_result['signed'],
+                has_compliance_statement = claude_compliance_result['has_compliance_statement'],
+                notes = claude_compliance_result['notes']
             )
         except Exception as e:
-            print(f'Claude failed to extract compliance table with error {e}:\n{json.dumps(claude_compliance_result,indent=2)})')
+            print(f'Claude failed to extract compliance table with error {type(e)} \n{e}:\n\n\n{json.dumps(claude_compliance_result,indent=2)})')
             claude_compliance_table = None
         return claude_compliance_table
 
@@ -674,7 +673,8 @@ class ComplianceChecker:
             assert new_wage_check.get('success'), 'Claude indicated failure in single wage check extraction.'
             claude_wage_check = EmployeeWageCheck(
                 employee_name=new_wage_check['employee_name'],
-                title=new_wage_check['title'],
+                identification_number=new_wage_check['identification_number'],
+                payroll_title=new_wage_check['payroll_title'],
                 davis_bacon_classification=new_wage_check['davis_bacon_classification'],
                 davis_bacon_base_rate=new_wage_check['davis_bacon_base_rate'],
                 davis_bacon_fringe_rate=new_wage_check['davis_bacon_fringe_rate'],
@@ -787,7 +787,13 @@ class ComplianceChecker:
         return (
             ComplianceTable(
                 payroll_name = openai_compliance_table.payroll_name,
-                wage_checks = matched_wage_checks
+                is_one_week=openai_compliance_table.is_one_week,
+                has_contract_number=openai_compliance_table.has_contract_number,
+                wage_checks = matched_wage_checks,
+                mathematically_correct=openai_compliance_table.mathematically_correct,
+                signed=openai_compliance_table.signed,
+                has_compliance_statement=openai_compliance_table.has_compliance_statement,
+                notes = openai_compliance_table.notes
             ),
             disputed_wage_checks,
             unmatched_openai,
@@ -816,8 +822,6 @@ if __name__ == '__main__':
         project_location_prompt = f.read()
 
     # Load configs
-    import tomli
-
     with open('../GlobalUtils/config.toml', 'rb') as f:
         global_config = tomli.load(f)
 

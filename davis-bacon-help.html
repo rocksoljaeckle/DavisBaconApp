@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Davis-Bacon Compliance Checker - Help</title>
+    <style>
+        :root {
+            --primary: #2c5282;
+            --primary-light: #4299e1;
+            --accent: #ed8936;
+            --text: #2d3748;
+            --text-light: #718096;
+            --bg: #f7fafc;
+            --card-bg: #ffffff;
+            --border: #e2e8f0;
+            --success: #48bb78;
+            --warning: #ecc94b;
+            --danger: #f56565;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            line-height: 1.6;
+            color: var(--text);
+            background: var(--bg);
+            padding: 2rem;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 3rem;
+            padding-bottom: 2rem;
+            border-bottom: 2px solid var(--border);
+        }
+
+        h1 {
+            color: var(--primary);
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+        }
+
+        header p {
+            color: var(--text-light);
+            font-size: 1.1rem;
+        }
+
+        section {
+            background: var(--card-bg);
+            border-radius: 8px;
+            padding: 1.75rem;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+            border: 1px solid var(--border);
+        }
+
+        h2 {
+            color: var(--primary);
+            font-size: 1.25rem;
+            margin-bottom: 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 2px solid var(--primary-light);
+        }
+
+        h3 {
+            color: var(--text);
+            font-size: 1rem;
+            margin: 1.25rem 0 0.5rem 0;
+        }
+
+        p {
+            margin-bottom: 0.75rem;
+        }
+
+        .process-steps {
+            display: grid;
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+
+        .step {
+            display: flex;
+            align-items: flex-start;
+            gap: 1rem;
+            padding: 1rem;
+            background: var(--bg);
+            border-radius: 6px;
+            border-left: 3px solid var(--primary-light);
+        }
+
+        .step-number {
+            background: var(--primary);
+            color: white;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            font-size: 0.875rem;
+            flex-shrink: 0;
+        }
+
+        .step-content h3 {
+            margin: 0 0 0.25rem 0;
+            font-size: 0.95rem;
+        }
+
+        .step-content p {
+            margin: 0;
+            color: var(--text-light);
+            font-size: 0.9rem;
+        }
+
+        .dual-model {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+            margin: 1rem 0;
+        }
+
+        @media (max-width: 600px) {
+            .dual-model {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .model-card {
+            padding: 1rem;
+            border-radius: 6px;
+            text-align: center;
+        }
+
+        .model-card.openai {
+            background: linear-gradient(135deg, #f0fff4 0%, #c6f6d5 100%);
+            border: 1px solid #9ae6b4;
+        }
+
+        .model-card.claude {
+            background: linear-gradient(135deg, #faf5ff 0%, #e9d8fd 100%);
+            border: 1px solid #d6bcfa;
+        }
+
+        .model-card h4 {
+            margin-bottom: 0.25rem;
+            font-size: 0.95rem;
+        }
+
+        .model-card p {
+            font-size: 0.85rem;
+            color: var(--text-light);
+            margin: 0;
+        }
+
+        .table-demo {
+            margin: 1rem 0;
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+        }
+
+        th, td {
+            padding: 0.6rem 0.75rem;
+            text-align: left;
+            border: 1px solid var(--border);
+        }
+
+        th {
+            background: var(--primary);
+            color: white;
+            font-weight: 600;
+        }
+
+        tr:nth-child(even) {
+            background: var(--bg);
+        }
+
+        tr:hover {
+            background: #edf2f7;
+            cursor: pointer;
+        }
+
+        .compliance-cell {
+            text-align: center;
+            font-weight: 600;
+        }
+
+        .compliance-cell.compliant {
+            background: #c6f6d5;
+            color: #276749;
+        }
+
+        .compliance-cell.non-compliant {
+            background: #fed7d7;
+            color: #c53030;
+        }
+
+        .compliance-cell.unknown {
+            background: #fefcbf;
+            color: #975a16;
+        }
+
+        .compliance-cell.disputed {
+            background: #fff;
+            color: #c53030;
+        }
+
+        .status {
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .status.compliant {
+            background: #c6f6d5;
+            color: #276749;
+        }
+
+        .status.non-compliant {
+            background: #fed7d7;
+            color: #c53030;
+        }
+
+        .status.disputed {
+            background: #fefcbf;
+            color: #975a16;
+        }
+
+        .disputed-banner {
+            background: #fff5f5;
+            border: 1px solid #fc8181;
+            border-radius: 6px;
+            padding: 0.75rem 1rem;
+            margin-bottom: 1rem;
+            color: #c53030;
+            font-size: 0.9rem;
+            display: flex;
+            align-items: flex-start;
+            gap: 0.5rem;
+        }
+
+        .disputed-banner .icon {
+            flex-shrink: 0;
+            margin-top: 2px;
+        }
+
+        .disputed-text {
+            color: #c53030;
+            font-weight: 600;
+        }
+
+        .unknown-text {
+            color: #975a16;
+            font-weight: 600;
+        }
+
+        .disputed-section {
+            border: 2px solid var(--warning);
+            border-radius: 6px;
+            padding: 1rem;
+            margin: 1rem 0;
+            background: #fffff0;
+        }
+
+        .disputed-section h4 {
+            color: #975a16;
+            margin-bottom: 0.75rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .icon {
+            display: inline-block;
+            width: 18px;
+            height: 18px;
+        }
+
+        .columns-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 0.5rem;
+            margin: 0.75rem 0;
+        }
+
+        .column-item {
+            background: var(--bg);
+            padding: 0.5rem 0.75rem;
+            border-radius: 4px;
+            font-size: 0.9rem;
+            border-left: 3px solid var(--primary-light);
+        }
+
+        .column-item strong {
+            display: block;
+            font-size: 0.8rem;
+            color: var(--text-light);
+            margin-bottom: 0.15rem;
+        }
+
+        .tip-box {
+            background: linear-gradient(135deg, #ebf8ff 0%, #bee3f8 100%);
+            border: 1px solid #90cdf4;
+            border-radius: 6px;
+            padding: 1rem;
+            margin-top: 1rem;
+        }
+
+        .tip-box h4 {
+            color: #2b6cb0;
+            margin-bottom: 0.5rem;
+            font-size: 0.9rem;
+        }
+
+        .tip-box p {
+            font-size: 0.9rem;
+            margin: 0;
+        }
+
+        .click-hint {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            background: var(--primary-light);
+            color: white;
+            padding: 0.15rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            margin-left: 0.5rem;
+        }
+
+        footer {
+            text-align: center;
+            padding-top: 1.5rem;
+            color: var(--text-light);
+            font-size: 0.85rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Davis-Bacon Compliance Checker</h1>
+            <p>Understanding Your Payroll Compliance Results</p>
+        </header>
+
+        <section style="background: linear-gradient(135deg, #fff5f5 0%, #fed7d7 100%); border: 1px solid #fc8181;">
+            <h2 style="border-bottom-color: #fc8181; color: #c53030;">Do Not Refresh the Page</h2>
+            <p>Refreshing or navigating away from the page will <strong>reset all results</strong>. Your compliance analysis will be lost and you will need to re-upload your documents and run the check again.</p>
+            <p>Use the <strong>Download</strong> button to save a copy of your results before leaving the page.</p>
+        </section>
+
+        <section>
+            <h2>How It Works</h2>
+            <p>This tool checks your certified payroll against Davis-Bacon wage determinations to verify that all workers are being paid at or above the required prevailing wage rates.</p>
+            
+            <div class="process-steps">
+                <div class="step">
+                    <div class="step-number">1</div>
+                    <div class="step-content">
+                        <h3>Upload Documents</h3>
+                        <p>Provide your certified payroll PDF(s) and the applicable wage determination document.</p>
+                    </div>
+                </div>
+                <div class="step">
+                    <div class="step-number">2</div>
+                    <div class="step-content">
+                        <h3>Dual-Model Analysis</h3>
+                        <p>Both OpenAI and Claude independently analyze each employee's classification and pay rate.</p>
+                    </div>
+                </div>
+                <div class="step">
+                    <div class="step-number">3</div>
+                    <div class="step-content">
+                        <h3>Cross-Verification</h3>
+                        <p>Results are compared. Matching conclusions increase confidence; discrepancies are flagged for review.</p>
+                    </div>
+                </div>
+                <div class="step">
+                    <div class="step-number">4</div>
+                    <div class="step-content">
+                        <h3>Review Results</h3>
+                        <p>View the compliance status of each employee, with detailed reasoning available on click.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section>
+            <h2>Payroll-Level Compliance Information</h2>
+            <p>In addition to individual wage checks, the tool evaluates several payroll-wide compliance items for each uploaded payroll. These are displayed at the top of each payroll's results section:</p>
+
+            <div class="columns-list">
+                <div class="column-item">
+                    <strong>Payroll Covers One Week</strong>
+                    Whether the payroll period spans exactly one week, as required by Davis-Bacon regulations
+                </div>
+                <div class="column-item">
+                    <strong>Contains Contract Number</strong>
+                    Whether the payroll includes a contract number
+                </div>
+                <div class="column-item">
+                    <strong>Mathematically Correct</strong>
+                    Whether hours, rates, and totals on the payroll are arithmetically consistent
+                </div>
+                <div class="column-item">
+                    <strong>Statement of Compliance</strong>
+                    Whether the payroll includes the required statement of compliance
+                </div>
+                <div class="column-item">
+                    <strong>Signed</strong>
+                    Whether the payroll has been signed by an authorized representative
+                </div>
+                <div class="column-item">
+                    <strong>Notes</strong>
+                    Any additional observations or caveats noted by the AI during analysis
+                </div>
+            </div>
+
+            <p>Each item is marked with a green check or red X. These checks help identify common certified payroll deficiencies beyond just wage rates.</p>
+        </section>
+
+        <section>
+            <h2>Why Two AI Models?</h2>
+            <p>Using two independent AI systems provides a crucial layer of verification. Each model analyzes your documents separately, without knowledge of the other's conclusions.</p>
+            
+            <div class="dual-model">
+                <div class="model-card openai">
+                    <h4>OpenAI</h4>
+                    <p>Independent analysis #1</p>
+                </div>
+                <div class="model-card claude">
+                    <h4>Claude</h4>
+                    <p>Independent analysis #2</p>
+                </div>
+            </div>
+            
+            <p>When both models agree, you can have higher confidence in the result. When they disagree, the disputed item is highlighted so you can review the reasoning from each model and make an informed decision.</p>
+        </section>
+
+        <section>
+            <h2>Understanding the Results Table</h2>
+            <p>The primary results table shows each employee from your payroll with the following information:</p>
+            
+            <div class="columns-list">
+                <div class="column-item">
+                    <strong>employee_name</strong>
+                    As listed on payroll
+                </div>
+                <div class="column-item">
+                    <strong>identification_number</strong>
+                    Employee ID or SSN (last 4) from payroll
+                </div>
+                <div class="column-item">
+                    <strong>payroll_title</strong>
+                    Job title from payroll
+                </div>
+                <div class="column-item">
+                    <strong>davis_bacon_classification</strong>
+                    Matched wage determination class
+                </div>
+                <div class="column-item">
+                    <strong>davis_bacon_base_rate</strong>
+                    Required base hourly wage
+                </div>
+                <div class="column-item">
+                    <strong>davis_bacon_fringe_rate</strong>
+                    Required fringe benefit rate
+                </div>
+                <div class="column-item">
+                    <strong>davis_bacon_total_rate</strong>
+                    Base + fringe combined
+                </div>
+                <div class="column-item">
+                    <strong>overtime_rate</strong>
+                    Overtime hourly rate, if applicable
+                </div>
+                <div class="column-item">
+                    <strong>paid_rate</strong>
+                    Actual rate paid to employee
+                </div>
+                <div class="column-item">
+                    <strong>compliance</strong>
+                    ✓ compliant / ✗ non-compliant / ? unknown
+                </div>
+            </div>
+
+            <div class="table-demo">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>employee_name</th>
+                            <th>identification_number</th>
+                            <th>payroll_title</th>
+                            <th>davis_bacon_classification</th>
+                            <th>davis_bacon_base_rate</th>
+                            <th>davis_bacon_fringe_rate</th>
+                            <th>davis_bacon_total_rate</th>
+                            <th>overtime_rate</th>
+                            <th>paid_rate</th>
+                            <th>compliance</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Johnson, Robert M</td>
+                            <td>1234</td>
+                            <td>Traffic Groundman</td>
+                            <td>TRAFFIC SIGNALIZATION: Gro...</td>
+                            <td>11.44</td>
+                            <td>2.84</td>
+                            <td>14.28</td>
+                            <td>21.42</td>
+                            <td>21.22</td>
+                            <td class="compliance-cell compliant">✓</td>
+                        </tr>
+                        <tr>
+                            <td>Williams, Sarah K</td>
+                            <td>5678</td>
+                            <td>111 Electrician</td>
+                            <td>ELECTRICIAN (Excludes Traffic...</td>
+                            <td>33.45</td>
+                            <td>7.58</td>
+                            <td>41.03</td>
+                            <td>57.75</td>
+                            <td>38.50</td>
+                            <td class="compliance-cell non-compliant">✗</td>
+                        </tr>
+                        <tr>
+                            <td>Davis, Michael J</td>
+                            <td>9012</td>
+                            <td>Apprentice 2nd Period</td>
+                            <td>ELECTRICIAN: Apprentice</td>
+                            <td>—</td>
+                            <td>—</td>
+                            <td>—</td>
+                            <td>—</td>
+                            <td>19.75</td>
+                            <td class="compliance-cell unknown">?</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="tip-box">
+                <h4>💡 Click Any Row for Details</h4>
+                <p>Clicking on an employee row reveals the AI's reasoning—how it matched the job title to a classification and calculated compliance.</p>
+                <p style="margin-top: 0.5rem;">You'll also have the option to view citations—highlighted excerpts from your uploaded documents that show exactly which parts the model used to make its determination.</p>
+            </div>
+        </section>
+
+        <section>
+            <h2>Disputed Wage Checks</h2>
+            <p>When OpenAI and Claude reach different conclusions about an employee's classification or compliance, a warning banner appears listing the affected employees, followed by a separate "Disputed Wage Checks" table.</p>
+
+            <div class="disputed-banner">
+                <svg class="icon" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
+                </svg>
+                Disputed Wage Check between OpenAI and Claude for employees: "Thompson, James R", "Martinez, Carlos A", "Anderson, Emily N", "Garcia, David L", "Brown, Kevin T", "Wilson, Amy S", "Lee, Brandon P"
+            </div>
+
+            <div class="disputed-section">
+                <h4>
+                    <svg class="icon" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
+                    </svg>
+                    Why Disputes Occur
+                </h4>
+                <p>These disagreements typically happen when:</p>
+                <ul style="margin: 0.5rem 0 0 1.25rem; font-size: 0.9rem;">
+                    <li>A job title could reasonably map to multiple classifications (e.g., "Traffic Signal Foreman" vs "Traffic Signalization" categories)</li>
+                    <li>Apprentice classifications don't have clear matches in the wage determination</li>
+                    <li>Specialized roles like "Crane Certified TRF Foreman" span multiple trade categories</li>
+                    <li>The wage determination doesn't include an exact match for the payroll title</li>
+                </ul>
+            </div>
+
+            <div class="table-demo">
+                <table class="disputed-table">
+                    <thead>
+                        <tr>
+                            <th>employee_name</th>
+                            <th>title</th>
+                            <th>davis_bacon_classification</th>
+                            <th>davis_bacon_total_rate</th>
+                            <th>paid_rate</th>
+                            <th>compliance</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Thompson, James R</td>
+                            <td>Crane Certified TRF Foreman</td>
+                            <td><span class="disputed-text">DISPUTED</span></td>
+                            <td><span class="disputed-text">DISPUTED</span></td>
+                            <td>40.33</td>
+                            <td class="compliance-cell disputed">DISPUTED</td>
+                        </tr>
+                        <tr>
+                            <td>Martinez, Carlos A</td>
+                            <td>Crane Cert TRF GF (68 scale)</td>
+                            <td><span class="disputed-text">DISPUTED</span></td>
+                            <td><span class="disputed-text">DISPUTED</span></td>
+                            <td>49.56</td>
+                            <td class="compliance-cell compliant">✓</td>
+                        </tr>
+                        <tr>
+                            <td>Anderson, Emily N</td>
+                            <td>TRF Apprentice 1st Period</td>
+                            <td><span class="disputed-text">DISPUTED</span></td>
+                            <td><span class="disputed-text">DISPUTED</span></td>
+                            <td>22.98</td>
+                            <td class="compliance-cell unknown">?</td>
+                        </tr>
+                        <tr>
+                            <td>Garcia, David L</td>
+                            <td>Traffic Signal Foreman</td>
+                            <td><span class="disputed-text">DISPUTED</span></td>
+                            <td><span class="disputed-text">DISPUTED</span></td>
+                            <td>39.83</td>
+                            <td class="compliance-cell disputed">DISPUTED</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <h3>Understanding Disputed Row Status</h3>
+            <p style="margin-top: 0.5rem;">In the disputed table, the compliance column can show four different states:</p>
+            <ul style="margin: 0.5rem 0 0 1.25rem; font-size: 0.9rem;">
+                <li><span class="disputed-text" style="font-weight: 600;">DISPUTED</span> — The models disagree on whether the employee is compliant</li>
+                <li><span class="status compliant" style="display: inline;">✓</span> (green) — Both models agree the employee is compliant, but disagree on classification or rate</li>
+                <li><span class="status non-compliant" style="display: inline;">✗</span> (red) — Both models agree the employee is non-compliant, but disagree on classification or rate</li>
+                <li><span class="unknown-text" style="font-weight: 600;">?</span> (yellow) — Neither model could determine compliance (often for apprentices without clear wage determination matches)</li>
+            </ul>
+
+            <p style="margin-top: 1rem;">Click on any disputed row to see the full reasoning from both models side-by-side, then make your own determination.</p>
+        </section>
+
+        <section>
+            <h2>Relevant Locations Map</h2>
+            <p>An interactive map displays locations relevant to the wage determination—such as union hiring halls or regional offices mentioned in the documents—and their geographic relationship to the project site. Hover over any arc or marker to see the location name and coordinates.</p>
+
+            <div class="columns-list">
+                <div class="column-item">
+                    <strong>Project Site</strong>
+                    Green marker at center
+                </div>
+                <div class="column-item">
+                    <strong>Relevant Locations</strong>
+                    Black markers for each location
+                </div>
+                <div class="column-item">
+                    <strong>Connection Arcs</strong>
+                    Arcs linking locations to project
+                </div>
+            </div>
+        </section>
+
+        <section>
+            <h2>Important Notes</h2>
+
+            <h3>This Tool is an Aid, Not a Final Authority</h3>
+            <p>AI analysis can miss nuances, especially with ambiguous job titles or poor-quality scans. Always verify flagged items against actual work performed and consult with compliance professionals when needed.</p>
+
+            <h3>Classification Matching</h3>
+            <p>The AI attempts to match payroll job titles to wage determination classifications. Some titles don't map cleanly—a "Helper" might be a Laborer or an apprentice in a specific trade depending on their actual duties.</p>
+
+            <h3>Document Quality Matters</h3>
+            <p>Clear, well-formatted PDFs produce better results. Handwritten entries, poor scans, or unusual formats may lead to extraction errors or misclassification.</p>
+        </section>
+    </div>
+</body>
+</html>
