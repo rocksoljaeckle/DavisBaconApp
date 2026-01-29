@@ -690,7 +690,7 @@ function(params) {
 
 # </editor-fold>
 
-st.set_page_config(layout = 'wide', page_title = 'Davis-Bacon Payroll Checker', page_icon = '✅')
+st.set_page_config(layout = 'wide', page_title = 'Davis-Bacon Payroll Checker', page_icon = 'assets/bacon.png')
 
 
 st.image('https://upload.wikimedia.org/wikipedia/commons/thumb/d/d2/Bacon_Davis.jpg/1920px-Bacon_Davis.jpg', width=200)
